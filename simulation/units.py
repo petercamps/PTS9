@@ -148,7 +148,7 @@ def _flavor(flavorunit):
 def latexForUnit(unitlike):
     latex = unit(unitlike).to_string("latex_inline")
     # work around for bug in astropy 3.1.2: put parentheses around LaTeX for arcsec if it carries an exponent
-    latex = latex.replace("{}^{\prime\prime}^","({}^{\prime\prime})^")
+    latex = latex.replace(r"{}^{\prime\prime}^",r"({}^{\prime\prime})^")
     # use "1" for dimensionless quantities instead of the empty string
     if latex==r"$\mathrm{}$": latex = r"$\mathrm{1}$"
     return r"$\,$[" + latex + r"]"

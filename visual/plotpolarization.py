@@ -28,7 +28,7 @@ import pts.utils as ut
 # that include instruments generating surface brightness frames or data cubes (*.fits files).
 # Specifically, the function accepts a sequence of Simulation and/or Instrument instances (or a single instance of
 # either of these types), and it creates polarization maps for each of the instruments that actually produced
-# both *_total.fits and *_stokes*.fits files. Other instruments are silently ignored.
+# both *_total.fits and \*_stokes\*.fits files. Other instruments are silently ignored.
 #
 # By default, the figures are saved in the output directory of the corresponding instrument, using a name starting
 # with the simulation prefix and instrument name, and ending with ".pdf". The output directory can be overridden.

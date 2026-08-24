@@ -29,6 +29,7 @@ import pts.utils as ut
 from .convert_band import *
 from .convert_copy import *
 from .convert_enthalpies import *
+from .convert_kernel import *
 from .convert_opticalprops import *
 from .convert_sed import *
 from .convert_singlegrain import *

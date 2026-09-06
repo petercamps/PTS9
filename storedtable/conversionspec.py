@@ -33,6 +33,7 @@ from .convert_kernel import *
 from .convert_opticalprops import *
 from .convert_sed import *
 from .convert_singlegrain import *
+from .convert_stabdict import *
 
 # -----------------------------------------------------------------
 #  createConversionSpecs function

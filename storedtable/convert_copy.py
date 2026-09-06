@@ -31,6 +31,7 @@ def copyWithoutConversion(inFilePaths, outFilePaths):
     # use the output path as a directory path and copy all input files preserving their names
     if len(inFilePaths) == 1 and len(outFilePaths) == 1 and "*" in inFilePaths[0]:
         outDirPath = pathlib.Path(outFilePaths[0])
+        outDirPath.mkdir(parents=True, exist_ok=True)
         for inFilePath in glob.glob(inFilePaths[0]):
             outFilePath = outDirPath / pathlib.Path(inFilePath).name
             shutil.copyfile(inFilePath, outFilePath)
@@ -39,6 +40,7 @@ def copyWithoutConversion(inFilePaths, outFilePaths):
     # use the output path as a directory path and preserve the input filenames
     elif len(inFilePaths) > 1 and len(outFilePaths) == 1:
         outDirPath = pathlib.Path(outFilePaths[0])
+        outDirPath.mkdir(parents=True, exist_ok=True)
         for inFilePath in inFilePaths:
             outFilePath = outDirPath / pathlib.Path(inFilePath).name
             shutil.copyfile(inFilePath, outFilePath)

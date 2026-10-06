@@ -9,7 +9,7 @@
 #
 # This script removes the (temporary) output for all or a selection of the standard functional SKIRT test cases.
 # This can be handy when manually backing up or copying the test suite hierarchy, or simply to save some disk space.
-# The test case definitions are expected to reside in the \c SKIRT/Functional9 directory hierarchy.
+# The test case definitions are expected to reside in the \c SKIRT/Functional10 directory hierarchy.
 # See the pts.test.functional module for more information.
 #
 # The script takes a single positional string argument, which can be one of the following:

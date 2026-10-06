@@ -88,11 +88,11 @@ class SkirtTestSuite:
     #
     # In addition, the constructor accepts an optional argument specifying the path of the directory containing the
     # complete functional test suite. If specified, the path is interpreted as described for the pts.utils.absPath()
-    # function. If omitted, the default path is pts.utils.projectParentPath()/"Functional9".
+    # function. If omitted, the default path is pts.utils.projectParentPath()/"Functional10".
     def __init__(self, subSuite=".", *, suitePath=None):
 
         # set the top-level suite path and remember the skirt path
-        self._suitePath = ut.absPath(suitePath) if suitePath is not None else ut.projectParentPath()/"Functional9"
+        self._suitePath = ut.absPath(suitePath) if suitePath is not None else ut.projectParentPath()/"Functional10"
 
         # find all matching sub-suite paths
         if subSuite is None or subSuite == "" or "." in subSuite:

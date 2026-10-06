@@ -8,7 +8,7 @@
 ## \package pts.skiupgrade.do.upgrade_functional_tests Upgrade ski files for all or a subsuite of functional tests
 #
 # This script upgrades the ski files for a selection of the standard functional test cases for SKIRT 9.
-# The test case definitions are expected to reside in the \c SKIRT/Functional9 directory hierarchy.
+# The test case definitions are expected to reside in the \c SKIRT/Functional10 directory hierarchy.
 #
 # The script takes a single positional string argument, which can be one of the following:
 #  - "." (a single period): upgrade all test cases in the standard suite.

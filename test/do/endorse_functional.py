@@ -12,7 +12,7 @@
 
 # \note This script destroys the current reference output for the specified test cases; USE WITH CARE!
 #
-# The test case definitions are expected to reside in the \c SKIRT/Functional9 directory hierarchy.
+# The test case definitions are expected to reside in the \c SKIRT/Functional10 directory hierarchy.
 # See the pts.test.functional module for more information.
 #
 # The script takes a single positional string argument, which can be one of the following:

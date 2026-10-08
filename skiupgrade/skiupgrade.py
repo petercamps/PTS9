@@ -245,6 +245,15 @@ def _getUpgradeDefinitions():
 
         # SKIRT 10 update (oct 2026): remove FullInstrument; replace it by an SEDInstrument and a FrameInstrument
         _replaceFullInstrument(),
+
+        # SKIRT 10 update (oct 2026): rename Lyman-alpha simulation mode and options for general resonant scattering
+        _changeScalarPropertyValue("MonteCarloSimulation", "simulationMode",
+                                   "LyaExtinctionOnly", "ResonanceExtinction"),
+        _changeCompoundPropertyName("MediumSystem", "lyaOptions", "resonanceOptions"),
+        _changeCompoundPropertyBaseType("MediumSystem", "resonanceOptions", "LyaOptions", "ResonanceOptions"),
+        _changeScalarPropertyName("LyaOptions", "lyaAccelerationScheme", "accelerationScheme"),
+        _changeScalarPropertyName("LyaOptions", "lyaAccelerationStrength", "accelerationStrength"),
+        _changeTypeName("LyaOptions", "ResonanceOptions"),
     ]
 
 # --------- handling probe to form-probe updates

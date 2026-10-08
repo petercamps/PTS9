@@ -254,6 +254,9 @@ def _getUpgradeDefinitions():
         _changeScalarPropertyName("LyaOptions", "lyaAccelerationScheme", "accelerationScheme"),
         _changeScalarPropertyName("LyaOptions", "lyaAccelerationStrength", "accelerationStrength"),
         _changeTypeName("LyaOptions", "ResonanceOptions"),
+
+        # SKIRT 10 update (oct 2026): move the default instrument wavelength grid into a new wavelength grid pool
+        _moveDefaultWavelengthGridToPool(),
     ]
 
 # --------- handling probe to form-probe updates
@@ -388,6 +391,32 @@ def _replaceFullInstrument():
                 </xsl:element>
             </xsl:template>
             '''.format(notFrameProp))
+
+# Move the default instrument wavelength grid, if any, from the instrument system into a new wavelength grid pool
+# placed just before the instrument system, as a named grid called "default" that is also designated as the default
+# grid of the pool, so that the instruments and probes relying on the default grid keep using the same grid.
+def _moveDefaultWavelengthGridToPool():
+    return ('''//MonteCarloSimulation/instrumentSystem/InstrumentSystem/defaultWavelengthGrid''',
+            '''
+            <xsl:template match="//MonteCarloSimulation/instrumentSystem[InstrumentSystem/defaultWavelengthGrid]">
+                <wavelengthGridPool type="WavelengthGridPool">
+                    <WavelengthGridPool defaultGridName="default">
+                        <wavelengthGrids type="NamedWavelengthGrid">
+                            <NamedWavelengthGrid name="default">
+                                <wavelengthGrid type="WavelengthGrid">
+                                    <xsl:apply-templates select="InstrumentSystem/defaultWavelengthGrid/*"/>
+                                </wavelengthGrid>
+                            </NamedWavelengthGrid>
+                        </wavelengthGrids>
+                    </WavelengthGridPool>
+                </wavelengthGridPool>
+                <xsl:copy>
+                    <xsl:apply-templates select="@*|node()"/>
+                </xsl:copy>
+            </xsl:template>
+            <xsl:template match="//InstrumentSystem/defaultWavelengthGrid">
+            </xsl:template>
+            ''')
 
 # --------- handling types
 

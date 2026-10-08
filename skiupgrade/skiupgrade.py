@@ -242,6 +242,9 @@ def _getUpgradeDefinitions():
 
         # SKIRT update (sep 2025): OpacityProbe expects compound wavelengthGrid instead of scalar wavelength
         _replaceWavelengthByGrid("OpacityProbe"),
+
+        # SKIRT 10 update (oct 2026): remove FullInstrument; replace it by an SEDInstrument and a FrameInstrument
+        _replaceFullInstrument(),
     ]
 
 # --------- handling probe to form-probe updates
@@ -356,6 +359,26 @@ def _replaceWavelengthByGrid(typeName):
                 </xsl:element>
             </xsl:template>
             '''.format(typeName))
+
+# Replace each FullInstrument by an SEDInstrument followed by a FrameInstrument with the same name and line of sight;
+# placed consecutively, the two instruments receive the same peel-off photon packets. The SEDInstrument receives all
+# properties except for the frame properties and has no aperture, like the SED recorded by the FullInstrument. Both
+# instruments receive a copy of the instrument-specific wavelength grid, if any.
+def _replaceFullInstrument():
+    frameProps = ["fieldOfViewX", "numPixelsX", "centerX", "fieldOfViewY", "numPixelsY", "centerY"]
+    notFrameProp = " and ".join("local-name() != '{0}'".format(prop) for prop in frameProps)
+    return ('''//FullInstrument''',
+            '''
+            <xsl:template match="//FullInstrument">
+                <xsl:element name="SEDInstrument">
+                    <xsl:apply-templates select="@*[{0}]"/>
+                    <xsl:apply-templates select="node()"/>
+                </xsl:element>
+                <xsl:element name="FrameInstrument">
+                    <xsl:apply-templates select="@*|node()"/>
+                </xsl:element>
+            </xsl:template>
+            '''.format(notFrameProp))
 
 # --------- handling types
 

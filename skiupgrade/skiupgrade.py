@@ -361,9 +361,9 @@ def _replaceWavelengthByGrid(typeName):
             '''.format(typeName))
 
 # Replace each FullInstrument by an SEDInstrument followed by a FrameInstrument with the same name and line of sight;
-# placed consecutively, the two instruments receive the same peel-off photon packets. The SEDInstrument receives all
-# properties except for the frame properties and has no aperture, like the SED recorded by the FullInstrument. Both
-# instruments receive a copy of the instrument-specific wavelength grid, if any.
+# because they have the same line of sight, the two instruments receive the same peel-off photon packets. The
+# SEDInstrument receives all properties except for the frame properties and has no aperture, like the SED recorded by
+# the FullInstrument. Both instruments receive a copy of the instrument-specific wavelength grid, if any.
 def _replaceFullInstrument():
     frameProps = ["fieldOfViewX", "numPixelsX", "centerX", "fieldOfViewY", "numPixelsY", "centerY"]
     notFrameProp = " and ".join("local-name() != '{0}'".format(prop) for prop in frameProps)

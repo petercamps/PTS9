@@ -258,9 +258,10 @@ def _getUpgradeDefinitions():
         # SKIRT 10 update (oct 2026): move the default instrument wavelength grid into a new wavelength grid pool
         _moveDefaultWavelengthGridToPool(),
 
-        # SKIRT 10 update (oct 2026): replace PolicyTreeSpatialGrid with DensityTreePolicy by a binary tree or octtree
-        # grid with a separate policy for each criterion
-        _replaceDensityPolicyTreeGrid(),
+        # SKIRT 10 update (oct 2026): replace PolicyTreeSpatialGrid by a binary tree or octtree grid with a list of
+        # policies, and FileTreeSpatialGrid by an octtree grid with a topology policy
+        _replacePolicyTreeGrid(),
+        _replaceFileTreeGrid(),
     ]
 
 # --------- handling probe to form-probe updates
@@ -422,16 +423,29 @@ def _moveDefaultWavelengthGridToPool():
             </xsl:template>
             ''')
 
-# Replace a PolicyTreeSpatialGrid with a DensityTreePolicy by an OctTreeSpatialGrid or BinTreeSpatialGrid, depending
-# on the configured tree type. The minimum and maximum levels move from the policy to the grid. Each criterion of the
-# DensityTreePolicy that is enabled (nonzero, taking into account the default values) and that applies to a material
-# type present in the simulation becomes a separate policy in the grid's policy list, in the order in which the old
-# policy evaluated them: a DensityTreePolicy for the dust, electron, and gas fractions, an OpticalDepthTreePolicy for
-# the dust optical depth, and a DispersionTreePolicy for the dust density dispersion. The old policy ignored criteria
-# for material types that are not present in the simulation, while the new policies report an error for them.
-# A material type is present if the ski file has a material mix (or mix family) of that type; the type is derived
-# from the name of the mix. Grids with other policies are left alone.
-def _replaceDensityPolicyTreeGrid():
+# Replace a PolicyTreeSpatialGrid by an OctTreeSpatialGrid or BinTreeSpatialGrid, depending on the configured tree
+# type, with a list of policies replacing the old policy. The minimum and maximum levels move from the policy to the
+# grid. The old policy can be a DensityTreePolicy (the default if the grid has no policy element), a
+# NestedDensityTreePolicy, or a SiteListTreePolicy.
+#
+# Each criterion of a DensityTreePolicy that is enabled (nonzero, taking into account the default values) and that
+# applies to a material type present in the simulation becomes a separate policy in the grid's policy list, in the
+# order in which the old policy evaluated them: a DensityTreePolicy for the dust, electron, and gas fractions, an
+# OpticalDepthTreePolicy for the dust optical depth, and a DispersionTreePolicy for the dust density dispersion. The
+# old policy ignored criteria for material types that are not present in the simulation, while the new policies report
+# an error for them. A material type is present if the ski file has a material mix (or mix family) of that type; the
+# type is derived from the name of the mix.
+#
+# A NestedDensityTreePolicy contributes the policies for its own criteria, as for a DensityTreePolicy, followed by
+# those for the criteria of its inner policy, each wrapped in a BoxTreePolicy for the inner box (recursively, for a
+# nested inner policy). The grid gets the minimum level of the outer policy and the largest of the maximum levels.
+# The other levels of the policies are lost, because the new policies have no levels of their own. Also, the criteria
+# of the outer policy now apply inside the box as well: the new grid subdivides a node as soon as one of its policies
+# asks for it, while the old policy used only the inner criteria inside the box.
+#
+# A SiteListTreePolicy keeps its number of extra levels; without a file name, it uses the sites of the first medium
+# offering a site list, as before.
+def _replacePolicyTreeGrid():
     mix = "//*[@type='MaterialMix' or @type='MaterialMixFamily']/*"
     dust = "boolean({}[contains(local-name(),'DustMix')])".format(mix)
     electrons = "boolean({}[local-name()='ElectronMix'])".format(mix)
@@ -450,62 +464,182 @@ def _replaceDensityPolicyTreeGrid():
                     <xsl:otherwise>{1}</xsl:otherwise>
                   </xsl:choose>'''.format(attribute, default)
 
-    return ('''//PolicyTreeSpatialGrid[policy/DensityTreePolicy]''',
+    # statement that outputs the criterion given as an XSLT fragment, wrapped in a BoxTreePolicy for each of the boxes
+    def criterion(fragment):
+        return '''<xsl:call-template name="boxes">
+                    <xsl:with-param name="boxes" select="$boxes"/>
+                    <xsl:with-param name="criterion">{}
+                    </xsl:with-param>
+                  </xsl:call-template>'''.format(fragment)
+
+    return ('''//PolicyTreeSpatialGrid''',
             '''
-            <xsl:template match="//PolicyTreeSpatialGrid[policy/DensityTreePolicy]">
-                <xsl:variable name="policy" select="policy/DensityTreePolicy"/>
+            <xsl:template match="//PolicyTreeSpatialGrid">
+                <xsl:variable name="policy" select="policy/*"/>
+                <xsl:variable name="bin" select="@treeType='BinTree'"/>
                 <xsl:variable name="gridType">
                     <xsl:choose>
-                        <xsl:when test="@treeType='BinTree'">BinTreeSpatialGrid</xsl:when>
+                        <xsl:when test="$bin">BinTreeSpatialGrid</xsl:when>
                         <xsl:otherwise>OctTreeSpatialGrid</xsl:otherwise>
                     </xsl:choose>
                 </xsl:variable>
                 <xsl:element name="{{$gridType}}">
                     <xsl:apply-templates select="@*[local-name() != 'treeType']"/>
-                    <xsl:copy-of select="$policy/@minLevel | $policy/@maxLevel"/>
+                    <xsl:copy-of select="$policy/@minLevel"/>
+                    <xsl:choose>
+                        <xsl:when test="local-name($policy)='NestedDensityTreePolicy'">
+                            <!-- the largest maximum level of the outer and inner policies, taking into account the
+                                 default value for a policy without a maximum level or a missing inner policy -->
+                            <xsl:variable name="all" select="$policy/descendant-or-self::*[
+                                    local-name()='DensityTreePolicy' or local-name()='NestedDensityTreePolicy']"/>
+                            <xsl:variable name="default">
+                                <xsl:choose>
+                                    <xsl:when test="$bin">21</xsl:when>
+                                    <xsl:otherwise>7</xsl:otherwise>
+                                </xsl:choose>
+                            </xsl:variable>
+                            <xsl:variable name="explicit">
+                                <xsl:for-each select="$all/@maxLevel">
+                                    <xsl:sort select="." data-type="number" order="descending"/>
+                                    <xsl:if test="position()=1"><xsl:value-of select="."/></xsl:if>
+                                </xsl:for-each>
+                            </xsl:variable>
+                            <xsl:attribute name="maxLevel">
+                                <xsl:choose>
+                                    <xsl:when test="($all[not(@maxLevel)] or $all[not(innerPolicy/*)][
+                                                        local-name()='NestedDensityTreePolicy'])
+                                                    and not(number($explicit) >= number($default))">
+                                        <xsl:value-of select="$default"/>
+                                    </xsl:when>
+                                    <xsl:otherwise><xsl:value-of select="$explicit"/></xsl:otherwise>
+                                </xsl:choose>
+                            </xsl:attribute>
+                        </xsl:when>
+                        <xsl:otherwise>
+                            <xsl:copy-of select="$policy/@maxLevel"/>
+                        </xsl:otherwise>
+                    </xsl:choose>
                     <policies type="TreePolicy">
-                        <xsl:if test="{dust} and {dustFraction}">
+                        <xsl:choose>
+                            <xsl:when test="local-name($policy)='SiteListTreePolicy'">
+                                <SiteListTreePolicy>
+                                    <xsl:copy-of select="$policy/@numExtraLevels"/>
+                                </SiteListTreePolicy>
+                            </xsl:when>
+                            <xsl:otherwise>
+                                <xsl:call-template name="criteria">
+                                    <xsl:with-param name="policy" select="$policy"/>
+                                    <xsl:with-param name="boxes" select="/.."/>
+                                </xsl:call-template>
+                            </xsl:otherwise>
+                        </xsl:choose>
+                    </policies>
+                </xsl:element>
+            </xsl:template>
+
+            <!-- outputs the policies for the criteria of the given DensityTreePolicy or NestedDensityTreePolicy
+                 (or of the default DensityTreePolicy if the node set is empty), each wrapped in a BoxTreePolicy for
+                 the inner box of each of the given NestedDensityTreePolicy elements, outermost first -->
+            <xsl:template name="criteria">
+                <xsl:param name="policy"/>
+                <xsl:param name="boxes"/>
+                <xsl:if test="{dust} and {dustFraction}">
+                    {dustFractionCriterion}
+                </xsl:if>
+                <xsl:if test="{dust} and {dustOpticalDepth}">
+                    {dustOpticalDepthCriterion}
+                </xsl:if>
+                <xsl:if test="{dust} and {dustDispersion}">
+                    {dustDispersionCriterion}
+                </xsl:if>
+                <xsl:if test="{electrons} and {electronFraction}">
+                    {electronFractionCriterion}
+                </xsl:if>
+                <xsl:if test="{gas} and {gasFraction}">
+                    {gasFractionCriterion}
+                </xsl:if>
+                <xsl:if test="local-name($policy)='NestedDensityTreePolicy'">
+                    <xsl:call-template name="criteria">
+                        <xsl:with-param name="policy" select="$policy/innerPolicy/*"/>
+                        <xsl:with-param name="boxes" select="$boxes | $policy"/>
+                    </xsl:call-template>
+                </xsl:if>
+            </xsl:template>
+
+            <!-- outputs the given criterion, wrapped in a BoxTreePolicy for the inner box of each of the given
+                 NestedDensityTreePolicy elements, outermost first -->
+            <xsl:template name="boxes">
+                <xsl:param name="boxes"/>
+                <xsl:param name="criterion"/>
+                <xsl:choose>
+                    <xsl:when test="$boxes">
+                        <BoxTreePolicy minX="{{$boxes[1]/@innerMinX}}" maxX="{{$boxes[1]/@innerMaxX}}"
+                                       minY="{{$boxes[1]/@innerMinY}}" maxY="{{$boxes[1]/@innerMaxY}}"
+                                       minZ="{{$boxes[1]/@innerMinZ}}" maxZ="{{$boxes[1]/@innerMaxZ}}">
+                            <policy type="TreePolicy">
+                                <xsl:call-template name="boxes">
+                                    <xsl:with-param name="boxes" select="$boxes[position() > 1]"/>
+                                    <xsl:with-param name="criterion" select="$criterion"/>
+                                </xsl:call-template>
+                            </policy>
+                        </BoxTreePolicy>
+                    </xsl:when>
+                    <xsl:otherwise>
+                        <xsl:copy-of select="$criterion"/>
+                    </xsl:otherwise>
+                </xsl:choose>
+            </xsl:template>
+            '''.format(dust=dust, electrons=electrons, gas=gas,
+                       dustFraction=enabled("maxDustFraction", True),
+                       dustOpticalDepth=enabled("maxDustOpticalDepth", False),
+                       dustDispersion=enabled("maxDustDensityDispersion", False),
+                       electronFraction=enabled("maxElectronFraction", True),
+                       gasFraction=enabled("maxGasFraction", True),
+                       dustFractionCriterion=criterion('''
                             <DensityTreePolicy materialType="Dust">
-                                <xsl:attribute name="maxFraction">{dustFractionValue}</xsl:attribute>
-                            </DensityTreePolicy>
-                        </xsl:if>
-                        <xsl:if test="{dust} and {dustOpticalDepth}">
+                                <xsl:attribute name="maxFraction">{}</xsl:attribute>
+                            </DensityTreePolicy>'''.format(value("maxDustFraction", "1e-6"))),
+                       dustOpticalDepthCriterion=criterion('''
                             <OpticalDepthTreePolicy materialType="Dust">
                                 <xsl:attribute name="maxOpticalDepth">
                                     <xsl:value-of select="$policy/@maxDustOpticalDepth"/>
                                 </xsl:attribute>
                                 <xsl:copy-of select="$policy/@wavelength"/>
-                            </OpticalDepthTreePolicy>
-                        </xsl:if>
-                        <xsl:if test="{dust} and {dustDispersion}">
+                            </OpticalDepthTreePolicy>'''),
+                       dustDispersionCriterion=criterion('''
                             <DispersionTreePolicy materialType="Dust">
                                 <xsl:attribute name="maxDispersion">
                                     <xsl:value-of select="$policy/@maxDustDensityDispersion"/>
                                 </xsl:attribute>
-                            </DispersionTreePolicy>
-                        </xsl:if>
-                        <xsl:if test="{electrons} and {electronFraction}">
+                            </DispersionTreePolicy>'''),
+                       electronFractionCriterion=criterion('''
                             <DensityTreePolicy materialType="Electrons">
-                                <xsl:attribute name="maxFraction">{electronFractionValue}</xsl:attribute>
-                            </DensityTreePolicy>
-                        </xsl:if>
-                        <xsl:if test="{gas} and {gasFraction}">
+                                <xsl:attribute name="maxFraction">{}</xsl:attribute>
+                            </DensityTreePolicy>'''.format(value("maxElectronFraction", "1e-6"))),
+                       gasFractionCriterion=criterion('''
                             <DensityTreePolicy materialType="Gas">
-                                <xsl:attribute name="maxFraction">{gasFractionValue}</xsl:attribute>
-                            </DensityTreePolicy>
-                        </xsl:if>
+                                <xsl:attribute name="maxFraction">{}</xsl:attribute>
+                            </DensityTreePolicy>'''.format(value("maxGasFraction", "1e-6")))))
+
+# Replace a FileTreeSpatialGrid by an OctTreeSpatialGrid with a TopologyTreePolicy for the same file. The ski file
+# does not indicate whether the topology describes an octtree or a binary tree, so the upgrade assumes an octtree;
+# for a binary tree, the TopologyTreePolicy reports an error, and the grid must be changed to a BinTreeSpatialGrid by
+# hand. The minimum level is set to zero and the maximum level to the largest allowed value, so that the grid
+# reproduces the recorded tree, whatever its depth.
+def _replaceFileTreeGrid():
+    return ('''//FileTreeSpatialGrid''',
+            '''
+            <xsl:template match="//FileTreeSpatialGrid">
+                <OctTreeSpatialGrid>
+                    <xsl:apply-templates select="@*[local-name() != 'filename']"/>
+                    <xsl:attribute name="minLevel">0</xsl:attribute>
+                    <xsl:attribute name="maxLevel">99</xsl:attribute>
+                    <policies type="TreePolicy">
+                        <TopologyTreePolicy filename="{@filename}"/>
                     </policies>
-                </xsl:element>
+                </OctTreeSpatialGrid>
             </xsl:template>
-            '''.format(dust=dust, electrons=electrons, gas=gas,
-                       dustFraction=enabled("maxDustFraction", True),
-                       dustFractionValue=value("maxDustFraction", "1e-6"),
-                       dustOpticalDepth=enabled("maxDustOpticalDepth", False),
-                       dustDispersion=enabled("maxDustDensityDispersion", False),
-                       electronFraction=enabled("maxElectronFraction", True),
-                       electronFractionValue=value("maxElectronFraction", "1e-6"),
-                       gasFraction=enabled("maxGasFraction", True),
-                       gasFractionValue=value("maxGasFraction", "1e-6")))
+            ''')
 
 # --------- handling types
 

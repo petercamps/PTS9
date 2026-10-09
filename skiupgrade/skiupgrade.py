@@ -257,6 +257,10 @@ def _getUpgradeDefinitions():
 
         # SKIRT 10 update (oct 2026): move the default instrument wavelength grid into a new wavelength grid pool
         _moveDefaultWavelengthGridToPool(),
+
+        # SKIRT 10 update (oct 2026): replace PolicyTreeSpatialGrid with DensityTreePolicy by a binary tree or octtree
+        # grid with a separate policy for each criterion
+        _replaceDensityPolicyTreeGrid(),
     ]
 
 # --------- handling probe to form-probe updates
@@ -417,6 +421,91 @@ def _moveDefaultWavelengthGridToPool():
             <xsl:template match="//InstrumentSystem/defaultWavelengthGrid">
             </xsl:template>
             ''')
+
+# Replace a PolicyTreeSpatialGrid with a DensityTreePolicy by an OctTreeSpatialGrid or BinTreeSpatialGrid, depending
+# on the configured tree type. The minimum and maximum levels move from the policy to the grid. Each criterion of the
+# DensityTreePolicy that is enabled (nonzero, taking into account the default values) and that applies to a material
+# type present in the simulation becomes a separate policy in the grid's policy list, in the order in which the old
+# policy evaluated them: a DensityTreePolicy for the dust, electron, and gas fractions, an OpticalDepthTreePolicy for
+# the dust optical depth, and a DispersionTreePolicy for the dust density dispersion. The old policy ignored criteria
+# for material types that are not present in the simulation, while the new policies report an error for them.
+# A material type is present if the ski file has a material mix (or mix family) of that type; the type is derived
+# from the name of the mix. Grids with other policies are left alone.
+def _replaceDensityPolicyTreeGrid():
+    mix = "//*[@type='MaterialMix' or @type='MaterialMixFamily']/*"
+    dust = "boolean({}[contains(local-name(),'DustMix')])".format(mix)
+    electrons = "boolean({}[local-name()='ElectronMix'])".format(mix)
+    gas = "boolean({}[contains(local-name(),'GasMix') or local-name()='SpinFlipAbsorptionMix'])".format(mix)
+
+    # condition for a criterion attribute that is enabled: it is nonzero, or it is missing and its default is nonzero
+    def enabled(attribute, defaultIsNonzero):
+        nonzero = "translate($policy/@{0},'0.+-eE','') != ''".format(attribute)
+        return "(not($policy/@{0}) or {1})".format(attribute, nonzero) if defaultIsNonzero \
+            else "($policy/@{0} and {1})".format(attribute, nonzero)
+
+    # value of a criterion attribute, or its default value if it is missing
+    def value(attribute, default):
+        return '''<xsl:choose>
+                    <xsl:when test="$policy/@{0}"><xsl:value-of select="$policy/@{0}"/></xsl:when>
+                    <xsl:otherwise>{1}</xsl:otherwise>
+                  </xsl:choose>'''.format(attribute, default)
+
+    return ('''//PolicyTreeSpatialGrid[policy/DensityTreePolicy]''',
+            '''
+            <xsl:template match="//PolicyTreeSpatialGrid[policy/DensityTreePolicy]">
+                <xsl:variable name="policy" select="policy/DensityTreePolicy"/>
+                <xsl:variable name="gridType">
+                    <xsl:choose>
+                        <xsl:when test="@treeType='BinTree'">BinTreeSpatialGrid</xsl:when>
+                        <xsl:otherwise>OctTreeSpatialGrid</xsl:otherwise>
+                    </xsl:choose>
+                </xsl:variable>
+                <xsl:element name="{{$gridType}}">
+                    <xsl:apply-templates select="@*[local-name() != 'treeType']"/>
+                    <xsl:copy-of select="$policy/@minLevel | $policy/@maxLevel"/>
+                    <policies type="TreePolicy">
+                        <xsl:if test="{dust} and {dustFraction}">
+                            <DensityTreePolicy materialType="Dust">
+                                <xsl:attribute name="maxFraction">{dustFractionValue}</xsl:attribute>
+                            </DensityTreePolicy>
+                        </xsl:if>
+                        <xsl:if test="{dust} and {dustOpticalDepth}">
+                            <OpticalDepthTreePolicy materialType="Dust">
+                                <xsl:attribute name="maxOpticalDepth">
+                                    <xsl:value-of select="$policy/@maxDustOpticalDepth"/>
+                                </xsl:attribute>
+                                <xsl:copy-of select="$policy/@wavelength"/>
+                            </OpticalDepthTreePolicy>
+                        </xsl:if>
+                        <xsl:if test="{dust} and {dustDispersion}">
+                            <DispersionTreePolicy materialType="Dust">
+                                <xsl:attribute name="maxDispersion">
+                                    <xsl:value-of select="$policy/@maxDustDensityDispersion"/>
+                                </xsl:attribute>
+                            </DispersionTreePolicy>
+                        </xsl:if>
+                        <xsl:if test="{electrons} and {electronFraction}">
+                            <DensityTreePolicy materialType="Electrons">
+                                <xsl:attribute name="maxFraction">{electronFractionValue}</xsl:attribute>
+                            </DensityTreePolicy>
+                        </xsl:if>
+                        <xsl:if test="{gas} and {gasFraction}">
+                            <DensityTreePolicy materialType="Gas">
+                                <xsl:attribute name="maxFraction">{gasFractionValue}</xsl:attribute>
+                            </DensityTreePolicy>
+                        </xsl:if>
+                    </policies>
+                </xsl:element>
+            </xsl:template>
+            '''.format(dust=dust, electrons=electrons, gas=gas,
+                       dustFraction=enabled("maxDustFraction", True),
+                       dustFractionValue=value("maxDustFraction", "1e-6"),
+                       dustOpticalDepth=enabled("maxDustOpticalDepth", False),
+                       dustDispersion=enabled("maxDustDensityDispersion", False),
+                       electronFraction=enabled("maxElectronFraction", True),
+                       electronFractionValue=value("maxElectronFraction", "1e-6"),
+                       gasFraction=enabled("maxGasFraction", True),
+                       gasFractionValue=value("maxGasFraction", "1e-6")))
 
 # --------- handling types
 

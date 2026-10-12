@@ -5,21 +5,21 @@
 # **       © Astronomical Observatory, Ghent University          **
 # *****************************************************************
 
-## \package pts.storedtable.do.construct_skirt_resources Construct all or part of the SKIRT resources from original data
+## \package pts.storedtable.do.create_skirt_resources Create all or part of the SKIRT resources from original data
 #
-# This script constructs all or part of the SKIRT resources (in SKIRT stored table format) from the original data
+# This script creates all or part of the SKIRT resources (in SKIRT stored table format) from the original data
 # residing in the \c SKIRT/Resources9/OriginalData directory hierarchy, according to the instructions embedded
 # in that same hierarchy.
 # See the pts.storedtable.conversionspec module for more information.
 #
 # Provide the name of a (possibly nested) subdirectory as the single argument to restrict execution to that
-# portion of the directory tree, or the string "." to construct all resources in the directory hierarchy.
+# portion of the directory tree, or the string "." to create all resources in the directory hierarchy.
 #
 
 # -----------------------------------------------------------------
 
 def do( subDirectory : (str,"name of subdirectory to process or . for all"),
-        ) -> "construct SKIRT resources from original data":
+        ) -> "create SKIRT resources from original data":
 
     import pts.storedtable as stab
     import pts.utils as ut

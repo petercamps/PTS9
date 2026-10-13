@@ -30,7 +30,7 @@
 #  - \em out (string): the output location: the existing directory in which the files are placed, as for the \c -o
 #    command line option of SKIRT when it does not name an HDF5 file. If the argument is omitted, the files are
 #    placed in the directory that holds the HDF5 file, which is where SKIRT looks for a regular input file before
-#    it looks for the bundle. An existing file with the same name is replaced.
+#    it looks for the bundle.
 #  - \em name (string): the name of the file, when converting a single bundle. By default, each file is named
 #    for its bundle, which is the name under which SKIRT looks for the regular file.
 #  - \em names (string): a comma-separated list of column descriptions for a text column file bundle or an AMR
@@ -40,6 +40,10 @@
 #    bundle, replacing the units recorded in the bundle, when converting a single bundle. This is intended for a
 #    bundle that does not record the units of its columns, because the header of a column text file cannot
 #    describe a column without specifying its unit.
+#
+# The script never replaces an existing file without confirmation. If one or more of the files to be written exist,
+# the script lists them and asks to enter "YES" before it converts anything; with any other answer, no bundles
+# are converted.
 #
 # For example, to convert all bundles in a suite of an HDF5 file to regular files in an existing directory:
 #
@@ -66,6 +70,7 @@ def do( path : (str,"HDF5 file, suite, bundle, or quoted wildcard pattern, in th
         units : (str,"comma-separated column units, replacing those in a single bundle") = "",
         ) -> "convert bundles in an HDF5 file to SKIRT input and output files":
 
+    import logging
     import pts.hdf5 as hdf
     import pts.utils as ut
 
@@ -73,16 +78,33 @@ def do( path : (str,"HDF5 file, suite, bundle, or quoted wildcard pattern, in th
     names = names if names else None
     units = units if units else None
 
-    # a single bundle can be given another file name and other column information; errors are reported as user errors
+    # only a single bundle can be given another file name and other column information
     bundlePaths = hdf.findBundles(path)
-    if len(bundlePaths) == 1:
-        hdf.convertBundle(bundlePaths[0], out, fileName=name, names=names, units=units)
+    single = len(bundlePaths) == 1
+    if not single and (name or names or units):
+        raise ut.UserError("The --name, --names, and --units options can be used only when converting " \
+                           "a single bundle")
+
+    # ask for confirmation before replacing existing files
+    existing = hdf.filesToBeReplaced(path, out, fileName=name)
+    if len(existing) > 0:
+        listed = ", ".join([ filepath.name for filepath in existing[:10] ]) + (", ..." if len(existing) > 10 else "")
+        logging.warning("** This will replace {} existing file(s) in {}: {} **" \
+                        .format(len(existing), existing[0].parent, listed))
+        try:
+            response = input("Enter 'YES' to replace the file(s) ({}): ".format(len(existing)))
+        except EOFError:
+            response = ""
+        if response != "YES":
+            logging.info("No bundles were converted")
+            return
+
+    # for a single bundle, errors are reported as user errors
+    if single:
+        hdf.convertBundle(bundlePaths[0], out, fileName=name, names=names, units=units, overwrite=True)
 
     # for several bundles, a bundle that cannot be converted is reported, and the other bundles are still converted
     else:
-        if name or names or units:
-            raise ut.UserError("The --name, --names, and --units options can be used only when converting " \
-                               "a single bundle")
-        hdf.convertBundles(path, out)
+        hdf.convertBundles(path, out, overwrite=True)
 
 # -----------------------------------------------------------------

@@ -32,6 +32,6 @@ from .convert import inferFileType, fileTypes, convertFile, convertFiles, \
                      convertTextColumnFile, convertAdaptiveMeshFile, convertStoredColumnsFile, \
                      convertStoredTableFile, convertFitsInputFile, convertFitsOutputFile, \
                      convertGridPlotFile, convertTextFile, \
-                     convertBundle, convertBundles, \
+                     convertBundle, convertBundles, filesToBeReplaced, \
                      convertTextColumnBundle, convertAdaptiveMeshBundle, convertStoredTableBundle, \
                      convertFitsBundle, convertGridPlotBundle, convertTextBundle

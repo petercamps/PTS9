@@ -126,8 +126,12 @@
 # reads the converted files instead of the bundles.
 #
 # By default, each file is named for its bundle, which is the name that SKIRT uses for the regular file. The
-# functions that convert a single bundle have an optional \em fileName argument to specify another name. An
-# existing file with the same name is replaced, as SKIRT does for its output files.
+# functions that convert a single bundle have an optional \em fileName argument to specify another name.
+#
+# An existing file is not replaced, unless the optional \em overwrite argument of the conversion function is True;
+# otherwise the function raises a user error and leaves the file as it is. The filesToBeReplaced() function lists
+# the existing files that a conversion would replace, so that a caller can ask for confirmation first, as the
+# \c convert_from_hdf5 command does.
 #
 # Contents of the converted files
 # -------------------------------
@@ -540,6 +544,11 @@ def convertStoredColumnsFile(inFilePath, outPath=None, *, bundleName=None, compr
 # The bundle receives a dataset for each axis and for each quantity in the table, as described for the
 # pts.hdf5.bundle.writeStoredTableBundle() function.
 #
+# \note SKIRT locates each axis and each quantity in a bundle by its name, so that it cannot read an axis or a
+# quantity that has the same name as a preceding axis or quantity of the table; see the
+# pts.hdf5.bundle.writeStoredTableBundle() function. None of the stored tables in the SKIRT resources has axes or
+# quantities with the same name.
+#
 # The function accepts the following arguments:
 #  - \em inFilePath: the path of the file to be converted, interpreted as described for pts.utils.absPath().
 #  - \em outPath: the output location, as described in the header of this module.
@@ -791,9 +800,11 @@ def convertTextFile(inFilePath, outPath=None, *, bundleName=None, textType=None)
 #  - \em fileName: the name of the file; by default the file is named for the bundle.
 #  - \em names, \em units: the column descriptions and units for a text column file bundle or an AMR text file
 #    bundle; see convertTextColumnBundle().
+#  - \em overwrite: True to replace an existing file with the same name; by default, the function raises a user
+#    error if the file exists.
 #
 # The function raises a user error if the type of the bundle is not recognized, or if the bundle cannot be converted.
-def convertBundle(bundlePath, outPath=None, *, fileName=None, names=None, units=None):
+def convertBundle(bundlePath, outPath=None, *, fileName=None, names=None, units=None, overwrite=False):
     # determine the type of the bundle
     bundleType = inferBundleType(bundlePath)
     if bundleType is None:
@@ -807,16 +818,18 @@ def convertBundle(bundlePath, outPath=None, *, fileName=None, names=None, units=
 
     # call the appropriate conversion function
     if bundleType == "columns":
-        return convertTextColumnBundle(bundlePath, outPath, fileName=fileName, names=names, units=units)
+        return convertTextColumnBundle(bundlePath, outPath, fileName=fileName, names=names, units=units,
+                                       overwrite=overwrite)
     if bundleType == "amr":
-        return convertAdaptiveMeshBundle(bundlePath, outPath, fileName=fileName, names=names, units=units)
+        return convertAdaptiveMeshBundle(bundlePath, outPath, fileName=fileName, names=names, units=units,
+                                         overwrite=overwrite)
     if bundleType == "storedtable":
-        return convertStoredTableBundle(bundlePath, outPath, fileName=fileName)
+        return convertStoredTableBundle(bundlePath, outPath, fileName=fileName, overwrite=overwrite)
     if bundleType == "fits":
-        return convertFitsBundle(bundlePath, outPath, fileName=fileName)
+        return convertFitsBundle(bundlePath, outPath, fileName=fileName, overwrite=overwrite)
     if bundleType == "gridplot":
-        return convertGridPlotBundle(bundlePath, outPath, fileName=fileName)
-    return convertTextBundle(bundlePath, outPath, fileName=fileName)
+        return convertGridPlotBundle(bundlePath, outPath, fileName=fileName, overwrite=overwrite)
+    return convertTextBundle(bundlePath, outPath, fileName=fileName, overwrite=overwrite)
 
 # -----------------------------------------------------------------
 
@@ -832,11 +845,12 @@ def convertBundle(bundlePath, outPath=None, *, fileName=None, names=None, units=
 #  - a bundle path with wildcards in the name of the bundle: all bundles in the suite matching the pattern.
 #
 # The \em outPath argument specifies the output directory, as described in the header of this module. Each file
-# is named for its bundle.
+# is named for its bundle. If the \em overwrite argument is True, existing files with the same names are replaced.
 #
 # A bundle with a type that is not recognized is skipped. If a bundle cannot be converted, the function logs an
-# error message and continues with the next bundle.
-def convertBundles(inPath, outPath=None):
+# error message and continues with the next bundle. This includes a bundle for which the file exists, unless the
+# \em overwrite argument is True.
+def convertBundles(inPath, outPath=None, *, overwrite=False):
     # get the bundles to be converted, and resolve the output directory once
     bundlePaths = findBundles(inPath)
     if len(bundlePaths) == 0:
@@ -853,7 +867,7 @@ def convertBundles(inPath, outPath=None):
                 logging.info("Skipping bundle with unrecognized type: {}".format(bundlePath))
                 numSkipped += 1
             else:
-                filePaths.append(convertBundle(bundlePath, dirpath))
+                filePaths.append(convertBundle(bundlePath, dirpath, overwrite=overwrite))
         except ut.UserError as error:
             logging.error("Cannot convert {}: {}".format(bundlePath, error.message))
             numFailed += 1
@@ -866,6 +880,28 @@ def convertBundles(inPath, outPath=None):
     if numSkipped > 0: message += "; skipped {} bundle(s)".format(numSkipped)
     if numFailed > 0: message += "; failed to convert {} bundle(s)".format(numFailed)
     logging.info(message)
+    return filePaths
+
+# -----------------------------------------------------------------
+
+## This function returns a list with the absolute paths of the existing files that would be replaced by converting
+# the specified bundles to regular files, in the order of the names of the bundles. The list is empty if no files
+# would be replaced. A caller can use this list to ask for confirmation before calling the convertBundle() or
+# convertBundles() function with a value of True for the \em overwrite argument.
+#
+# The \em inPath and \em outPath arguments specify the bundles to be converted and the output directory, as
+# described for the convertBundles() function. The \em fileName argument specifies the name of the file, as
+# described for the convertBundle() function; it can be used only if \em inPath refers to a single bundle. Bundles
+# with a type that is not recognized are ignored, because they are not converted.
+def filesToBeReplaced(inPath, outPath=None, *, fileName=None):
+    bundlePaths = findBundles(inPath)
+    if fileName and len(bundlePaths) != 1:
+        raise ut.UserError("A file name can be specified only when converting a single bundle")
+
+    filePaths = []
+    for bundlePath in bundlePaths:
+        filepath = _filePathFor(bundlePath, outPath, fileName)
+        if filepath.exists() and inferBundleType(bundlePath) is not None: filePaths.append(filepath)
     return filePaths
 
 # -----------------------------------------------------------------
@@ -898,8 +934,10 @@ def convertBundles(inPath, outPath=None):
 #  - \em names: the column descriptions, as a sequence of strings or as a single string with a comma-separated
 #    list, replacing the descriptions derived from the names of the datasets.
 #  - \em units: the column units, in the same form, replacing the units of the datasets.
-def convertTextColumnBundle(bundlePath, outPath=None, *, fileName=None, names=None, units=None):
-    outpath = _filePathFor(bundlePath, outPath, fileName)
+#  - \em overwrite: True to replace an existing file with the same name; by default, the function raises a user
+#    error if the file exists.
+def convertTextColumnBundle(bundlePath, outPath=None, *, fileName=None, names=None, units=None, overwrite=False):
+    outpath = _filePathFor(bundlePath, outPath, fileName, overwrite)
     table = readColumnBundle(bundlePath)
     header = _columnHeader(bundlePath, table, names, units)
 
@@ -922,8 +960,8 @@ def convertTextColumnBundle(bundlePath, outPath=None, *, fileName=None, names=No
 # its properties, as in a regular column text file. The header of the file, including the column information, is
 # written as described for the convertTextColumnBundle() function, and the arguments of this function are the same
 # as well.
-def convertAdaptiveMeshBundle(bundlePath, outPath=None, *, fileName=None, names=None, units=None):
-    outpath = _filePathFor(bundlePath, outPath, fileName)
+def convertAdaptiveMeshBundle(bundlePath, outPath=None, *, fileName=None, names=None, units=None, overwrite=False):
+    outpath = _filePathFor(bundlePath, outPath, fileName, overwrite)
     mesh = readAdaptiveMeshBundle(bundlePath)
     header = _columnHeader(bundlePath, mesh, names, units)
 
@@ -962,13 +1000,15 @@ def convertAdaptiveMeshBundle(bundlePath, outPath=None, *, fileName=None, names=
 #  - \em bundlePath: the bundle path of the bundle to be converted, as described in the pts.hdf5.bundle module.
 #  - \em outPath: the output directory, as described in the header of this module.
 #  - \em fileName: the name of the file; by default the file is named for the bundle.
+#  - \em overwrite: True to replace an existing file with the same name; by default, the function raises a user
+#    error if the file exists.
 #
 # The stored table format imposes some restrictions that do not apply to a bundle. The function raises a user
 # error if the name of the file does not have the \c .stab filename extension, if there are more than nine axes or
 # quantities, or if a name or a unit does not consist of one to eight printable 7-bit ASCII characters other
 # than white space.
-def convertStoredTableBundle(bundlePath, outPath=None, *, fileName=None):
-    outpath = _filePathFor(bundlePath, outPath, fileName)
+def convertStoredTableBundle(bundlePath, outPath=None, *, fileName=None, overwrite=False):
+    outpath = _filePathFor(bundlePath, outPath, fileName, overwrite)
     if outpath.suffix != ".stab":
         raise ut.UserError("Bundle {} cannot be converted to a file named '{}', because a stored table file must " \
                            "have the .stab filename extension; specify another file name" \
@@ -1022,8 +1062,10 @@ def convertStoredTableBundle(bundlePath, outPath=None, *, fileName=None):
 #  - \em bundlePath: the bundle path of the bundle to be converted, as described in the pts.hdf5.bundle module.
 #  - \em outPath: the output directory, as described in the header of this module.
 #  - \em fileName: the name of the file; by default the file is named for the bundle.
-def convertFitsBundle(bundlePath, outPath=None, *, fileName=None):
-    outpath = _filePathFor(bundlePath, outPath, fileName)
+#  - \em overwrite: True to replace an existing file with the same name; by default, the function raises a user
+#    error if the file exists.
+def convertFitsBundle(bundlePath, outPath=None, *, fileName=None, overwrite=False):
+    outpath = _filePathFor(bundlePath, outPath, fileName, overwrite)
     frame = readFitsBundle(bundlePath)
 
     # use 32-bit floating point numbers if these represent all values exactly
@@ -1091,8 +1133,10 @@ def convertFitsBundle(bundlePath, outPath=None, *, fileName=None):
 #  - \em bundlePath: the bundle path of the bundle to be converted, as described in the pts.hdf5.bundle module.
 #  - \em outPath: the output directory, as described in the header of this module.
 #  - \em fileName: the name of the file; by default the file is named for the bundle.
-def convertGridPlotBundle(bundlePath, outPath=None, *, fileName=None):
-    outpath = _filePathFor(bundlePath, outPath, fileName)
+#  - \em overwrite: True to replace an existing file with the same name; by default, the function raises a user
+#    error if the file exists.
+def convertGridPlotBundle(bundlePath, outPath=None, *, fileName=None, overwrite=False):
+    outpath = _filePathFor(bundlePath, outPath, fileName, overwrite)
     plot = readGridPlotBundle(bundlePath)
     points = plot["points"]
 
@@ -1122,8 +1166,10 @@ def convertGridPlotBundle(bundlePath, outPath=None, *, fileName=None):
 #  - \em bundlePath: the bundle path of the bundle to be converted, as described in the pts.hdf5.bundle module.
 #  - \em outPath: the output directory, as described in the header of this module.
 #  - \em fileName: the name of the file; by default the file is named for the bundle.
-def convertTextBundle(bundlePath, outPath=None, *, fileName=None):
-    outpath = _filePathFor(bundlePath, outPath, fileName)
+#  - \em overwrite: True to replace an existing file with the same name; by default, the function raises a user
+#    error if the file exists.
+def convertTextBundle(bundlePath, outPath=None, *, fileName=None, overwrite=False):
+    outpath = _filePathFor(bundlePath, outPath, fileName, overwrite)
     text = readTextBundle(bundlePath)["text"]
 
     # write the text without changing its line endings
@@ -1362,8 +1408,10 @@ def _outputDirectory(bundlePath, outPath):
     return dirpath
 
 ## This helper function returns the absolute path of the regular file for converting the specified bundle, given
-# the output location and the file name specified by the caller, if any.
-def _filePathFor(bundlePath, outPath, fileName):
+# the output location and the file name specified by the caller, if any. If the last argument is False, the
+# function raises a user error if the file exists; if it is True, the file can be replaced; and if it is omitted,
+# the function does not verify whether the file exists.
+def _filePathFor(bundlePath, outPath, fileName, overwrite=None):
     filePath, groupPath = splitBundlePath(bundlePath)
     if not groupPath:
         raise ut.UserError("Path does not specify the name of a bundle in the HDF5 file: '{}'".format(bundlePath))
@@ -1380,6 +1428,8 @@ def _filePathFor(bundlePath, outPath, fileName):
                            "name or output directory".format(bundlePath))
     if outpath.is_dir():
         raise ut.UserError("Cannot create file '{}' because there is a directory with that path".format(outpath))
+    if overwrite is False and outpath.exists():
+        raise ut.UserError("File '{}' already exists; it is replaced only on explicit request".format(outpath))
     return outpath
 
 ## This helper function creates the text file with the specified path, replacing an existing file, and returns the

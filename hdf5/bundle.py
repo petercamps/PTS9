@@ -377,6 +377,13 @@ def writeAdaptiveMeshBundle(bundlePath, isLeaf, topology, columns, names, units=
 # the axis), \c unit, and \c log (a Boolean that is True for a logarithmic scale); and a dataset for each quantity,
 # with a dimension for each axis in the order of the axes, and with the attributes \c unit and \c log. The datasets
 # are named for the axes and the quantities, adjusted as described for the datasetNames() function if needed.
+#
+# \note SKIRT locates each axis and each quantity by the name of its dataset. The names of the axes and quantities
+# of a table should therefore all differ from each other, which a file in SKIRT stored table format does not
+# require. If a quantity has the name of an axis, or if two axes or two quantities have the same name, the dataset
+# for the second one receives a sequence number, and SKIRT cannot read that axis or quantity from the bundle. The
+# readStoredTableBundle() function does read such a bundle. None of the stored tables in the SKIRT resources has
+# axes or quantities with the same name.
 def writeStoredTableBundle(bundlePath, axisNames, axisUnits, axisScales, axisGrids,
                            quantityNames, quantityUnits, quantityScales, quantityValues, *, compression=None):
     compression = _verifiedCompression(compression)
@@ -521,6 +528,7 @@ def writeGridPlotBundle(bundlePath, points, moveto, *, unit=None, compression=No
     if points.ndim != 2 or points.shape[1] not in (2, 3):
         raise ut.UserError("The points of a spatial grid plot must be an array with shape (N, 2) or (N, 3)")
     moveto = np.asarray(moveto)
+    if moveto.size == 0: moveto = moveto.astype(bool)    # an empty sequence does not have a Boolean type
     if moveto.dtype != bool or moveto.shape != (len(points),):
         raise ut.UserError("A spatial grid plot must have a Boolean 'moveto' flag for each point")
     if len(moveto) > 0 and not moveto[0]:

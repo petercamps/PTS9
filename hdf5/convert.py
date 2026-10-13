@@ -28,7 +28,11 @@
 # | fitsinput | convertFitsInputFile() | FITS file from which SKIRT reads just the pixel values
 # | fitsoutput | convertFitsOutputFile() | FITS file written by SKIRT, with its axes and units
 # | gridplot | convertGridPlotFile() | Text file with the data to plot a spatial grid
-# | text | convertTextFile() | Text file stored as a whole (log file, parameter file, convergence report)
+# | text | convertTextFile() | Text file stored as a whole (log file, parameter file, and some probe output)
+#
+# The two types of FITS file differ in what the bundle records next to the pixel values: nothing for the
+# \c fitsinput type, and the axes, the units, and the observer information for the \c fitsoutput type. Both types
+# of bundle hold the pixel values in the same way, so that SKIRT can read either of them as input.
 #
 # The type of a file is derived from its filename extension, ignoring case. Where the extension does not suffice
 # (for example, \c .dat is used for several types), the type is derived from the file names that SKIRT uses for its
@@ -57,9 +61,18 @@
 #
 # By default, the bundle is named for the source file, including its filename extension. SKIRT then finds the
 # bundle under the file name already used in the ski file, provided that the \c -i command line option specifies
-# the HDF5 file, and the suite if there is one. As an exception, the \c .scol extension is dropped from the name,
-# because SKIRT 10 rejects an input file name with that extension; the ski file must be adjusted anyway. The
-# conversion functions have an optional \em bundleName argument to specify another name.
+# the HDF5 file, and the suite if there is one. The conversion functions have an optional \em bundleName argument
+# to specify another name.
+#
+# \note A file in SKIRT stored columns format is the exception: the \c .scol filename extension is replaced by
+# \c .txt in the name of the bundle, so that the file \c stars.scol becomes the bundle \c stars.txt. SKIRT 10 no
+# longer supports the stored columns format, and rejects an input file name with the \c .scol extension. The
+# bundle therefore gets the name of the column text file with the same contents, and the ski file must be adjusted
+# to refer to that name, here \c stars.txt instead of \c stars.scol.
+#
+# If two source files would become a bundle with the same name, as for the files \c stars.scol and \c stars.txt in
+# the same directory, the convertFiles() function converts neither of them and reports the conflict. Convert one
+# of them, or convert them separately with different bundle names.
 #
 
 # -----------------------------------------------------------------
@@ -92,9 +105,10 @@ _columnInfoSyntax = re.compile(r"#\s*column\s*(\d*)\s*:\s*([^()]*)\(\s*([a-zA-Z0
 _floatSyntax = re.compile(r"[+-]?((\d+\.?\d*|\.\d+)([eE][+-]?\d+)?|nan|inf|infinity)", re.IGNORECASE)
 
 # the file names used by SKIRT for its log files (possibly with the rank of a process), its convergence reports,
-# and its spatial grid plot files, in lowercase
+# its grain population tables (with the index of a medium component), and its spatial grid plot files, in lowercase
 _logFileName = re.compile(r"_log(p\d+)?\.txt$")
 _convergenceFileName = re.compile(r"_convergence\.dat$")
+_grainPopulationsFileName = re.compile(r"_grainpops_\d+\.dat$")
 _gridPlotFileName = re.compile(r"_grid_(xy|xz|yz|xyz)\.dat$")
 
 # the header cards written by SKIRT to describe the observer, with the corresponding bundle attribute
@@ -124,10 +138,16 @@ def fileTypes():
 #  - \c .xml: unstructured text.
 #  - \c .fits: a FITS file written by SKIRT if the ORIGIN card in its primary header mentions SKIRT, which is the
 #    case for the files written by SKIRT and by PTS; otherwise a FITS file that provides just pixel values.
-#  - \c .txt or \c .dat: unstructured text if the file name ends in \c _log.txt or \c _convergence.dat; data to
-#    plot a spatial grid if the name ends in \c _grid_xy.dat, \c _grid_xz.dat, \c _grid_yz.dat, or \c _grid_xyz.dat;
-#    a column text file describing an adaptive mesh if the first line that is not empty and not a comment starts
-#    with an exclamation mark; and a regular column text file otherwise.
+#  - \c .txt or \c .dat: unstructured text if the file name ends in \c _log.txt, in \c _convergence.dat, or in
+#    \c _grainpops_N.dat, where N is a number; data to plot a spatial grid if the name ends in \c _grid_xy.dat,
+#    \c _grid_xz.dat, \c _grid_yz.dat, or \c _grid_xyz.dat; a column text file describing an adaptive mesh if the
+#    first line that is not empty and not a comment starts with an exclamation mark; and a regular column text
+#    file otherwise.
+#
+# The files with a name ending in \c _grainpops_N.dat are the grain population tables written by the
+# DustGrainPopulationsProbe. Although such a table has columns, one of them holds the name of a grain material
+# rather than a number, so that the table cannot be represented as a text column file bundle. It is stored as
+# unstructured text instead.
 #
 # The file path is interpreted as described for the pts.utils.absPath() function. The file must exist if its
 # contents are needed to determine the type.
@@ -143,6 +163,7 @@ def inferFileType(filePath):
         return "fitsoutput" if _isWrittenBySkirt(path) else "fitsinput"
     if suffix == ".txt" or suffix == ".dat":
         if _logFileName.search(name) or _convergenceFileName.search(name): return "text"
+        if _grainPopulationsFileName.search(name): return "text"
         if _gridPlotFileName.search(name): return "gridplot"
         return "amr" if _scanColumnFile(path).startsWithNonLeaf else "columns"
     return None
@@ -215,7 +236,9 @@ def convertFile(inFilePath, outPath=None, *, bundleName=None, fileType=None, nam
 #
 # Hidden files and HDF5 files are never converted. A file with a type that is not recognized is skipped, unless
 # the \em fileType argument specifies the type of all files. If a file cannot be converted, the function logs an
-# error message and continues with the next file.
+# error message and continues with the next file. This includes the files that would become a bundle with the
+# same name as another file, such as a stored columns file and a column text file with the same base name (see
+# the header of this module): none of these is converted.
 #
 # The other arguments are the same as for the convertFile() function, except that there is no argument to specify
 # the name of the bundles, and that the default HDF5 file is different. If the output location does not name an
@@ -244,19 +267,33 @@ def convertFiles(inPath, outPath=None, *, fileType=None, names=None, units=None,
     # resolve the output location once, so that all bundles are written to the same HDF5 file and suite
     location = resolveBundlePath(outPath, "", defaultpath)
 
-    # convert each of the files
-    bundlePaths = []
+    # select the files with a recognized type
+    selected = []
     numSkipped = 0
     numFailed = 0
     for filepath in filepaths:
         try:
-            if not fileType and inferFileType(filepath) is None:
+            if fileType or inferFileType(filepath) is not None:
+                selected.append(filepath)
+            else:
                 logging.info("Skipping file with unrecognized type: {}".format(filepath))
                 numSkipped += 1
-                continue
-            bundleName = _defaultBundleName(filepath)
-            if resolveBundlePath(location, bundleName, defaultpath) in bundlePaths:
-                raise ut.UserError("another file was already converted to a bundle named '{}'".format(bundleName))
+        except ut.UserError as error:
+            logging.error("Cannot convert {}: {}".format(filepath, error.message))
+            numFailed += 1
+        except OSError as error:
+            logging.error("Cannot convert {}: {}".format(filepath, error))
+            numFailed += 1
+
+    # convert each of the files, except those that would become a bundle with the same name as another file
+    bundlePaths = []
+    bundleNames = [ _defaultBundleName(filepath) for filepath in selected ]
+    for filepath, bundleName in zip(selected, bundleNames):
+        try:
+            if bundleNames.count(bundleName) > 1:
+                raise ut.UserError("{} files would become a bundle named '{}'; convert one of them, or convert " \
+                                   "them separately with different bundle names" \
+                                   .format(bundleNames.count(bundleName), bundleName))
             bundlePaths.append(convertFile(filepath, location, fileType=fileType, names=names, units=units,
                                            compression=compression))
         except ut.UserError as error:
@@ -376,11 +413,16 @@ def convertAdaptiveMeshFile(inFilePath, outPath=None, *, bundleName=None, names=
 # is no longer supported by SKIRT 10, to a text column file bundle, and returns the bundle path. The datasets are
 # named for the column names in the file and carry the corresponding units.
 #
+# \note By default, the bundle is named for the file with the \c .scol filename extension replaced by \c .txt;
+# for example, the file \c stars.scol becomes the bundle \c stars.txt. SKIRT 10 rejects an input file name with
+# the \c .scol extension, so the ski file must be adjusted to refer to the new name. The function logs the name
+# to be used.
+#
 # The function accepts the following arguments:
 #  - \em inFilePath: the path of the file to be converted, interpreted as described for pts.utils.absPath().
 #  - \em outPath: the output location, as described in the header of this module.
-#  - \em bundleName: the name of the bundle; by default the bundle is named for the file, without the \c .scol
-#    filename extension.
+#  - \em bundleName: the name of the bundle; by default the name of the file with the \c .scol filename extension
+#    replaced by \c .txt, as described above.
 #  - \em compression: the compression level for the datasets, from 1 to 9; by default there is no compression.
 def convertStoredColumnsFile(inFilePath, outPath=None, *, bundleName=None, compression=None):
     inpath = _existingFile(inFilePath)
@@ -403,6 +445,9 @@ def convertStoredColumnsFile(inFilePath, outPath=None, *, bundleName=None, compr
         raise ut.UserError("File is not a complete SKIRT stored columns file: {}".format(inpath)) from None
 
     writeColumnBundle(bundlePath, columns, names, units, compression=compression)
+    if not bundleName:
+        logging.info("  The ski file must refer to '{}' instead of '{}'" \
+                     .format(_defaultBundleName(inpath), inpath.name))
     return bundlePath
 
 # -----------------------------------------------------------------
@@ -496,7 +541,8 @@ def convertFitsInputFile(inFilePath, outPath=None, *, bundleName=None, hdu=None,
 
 ## This function converts a FITS file written by SKIRT to a FITS file bundle for output, which holds a frame or a
 # data cube together with the grid points of its axes and with the units of the data and the axes, and returns
-# the bundle path. The function obtains this information from the FITS file in the form written by SKIRT (and by
+# the bundle path. SKIRT can read the resulting bundle as input as well, just as it can read the FITS file. The
+# function obtains the information from the FITS file in the form written by SKIRT (and by
 # the pts.simulation.fits.writeFits() function):
 #
 #  - the data from the primary header-data unit, with its unit from the BUNIT card;
@@ -612,8 +658,9 @@ def convertGridPlotFile(inFilePath, outPath=None, *, bundleName=None, unit=None,
 # -----------------------------------------------------------------
 
 ## This function converts a text file to an unstructured text file bundle, which stores the contents of the file
-# as a whole, without interpreting it, and returns the bundle path. SKIRT uses this form for its log file, for
-# the parameter file in XML format, and for the convergence report written by the ConvergenceInfoProbe.
+# as a whole, without interpreting it, and returns the bundle path. This form serves for the log file, for the
+# parameter file in XML format, for the convergence report written by the ConvergenceInfoProbe, and for the grain
+# population table written by the DustGrainPopulationsProbe.
 #
 # The function accepts the following arguments:
 #  - \em inFilePath: the path of the file to be converted, interpreted as described for pts.utils.absPath().
@@ -782,10 +829,10 @@ def _existingFile(filePath):
         raise ut.UserError("File to be converted does not exist: '{}'".format(path))
     return path
 
-## This helper function returns the default bundle name for the specified file: the name of the file, without
-# the filename extension for a stored columns file.
+## This helper function returns the default bundle name for the specified file: the name of the file, with the
+# filename extension replaced by ".txt" for a stored columns file.
 def _defaultBundleName(inpath):
-    return inpath.stem if inpath.suffix.lower() == ".scol" else inpath.name
+    return inpath.with_suffix(".txt").name if inpath.suffix.lower() == ".scol" else inpath.name
 
 ## This helper function returns the bundle path for converting the specified file, given the output location and
 # the bundle name specified by the caller, if any.

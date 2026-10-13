@@ -26,7 +26,7 @@
 # | writeFitsInputBundle() | FITS file bundle for input | FITS file holding just an image or a data cube (input)
 # | writeFitsOutputBundle() | FITS file bundle for output | FITS file holding a frame or data cube and its axes (output)
 # | writeGridPlotBundle() | Spatial grid plot file bundle | Text file with data to plot a spatial grid (output)
-# | writeTextBundle() | Unstructured text file bundle | Log file, parameter file, or convergence report (output)
+# | writeTextBundle() | Unstructured text file bundle | Log file, parameter file, or free-form probe output
 #
 # A bundle resides in the root group of the HDF5 file or in a \em suite, i.e. an HDF5 group that holds bundles
 # and that itself resides in the root group or in another group. For example, the input for each of the simulations
@@ -370,19 +370,21 @@ def writeStoredTableBundle(bundlePath, axisNames, axisUnits, axisScales, axisGri
 #
 # The function expects the following arguments:
 #  - \em bundlePath: the bundle path, as described in the header of this module.
-#  - \em image: a two-dimensional array with shape (ny, nx) or a three-dimensional array with shape (nz, ny, nx).
+#  - \em data: a two-dimensional array with shape (ny, nx) or a three-dimensional array with shape (nz, ny, nx).
 #    This is the index order of the array obtained when reading a FITS file with the \c astropy.io.fits package.
 #  - \em compression: the optional compression level, as described in the header of this module.
 #
-# The bundle holds a single dataset named \c image, without attributes.
-def writeFitsInputBundle(bundlePath, image, *, compression=None):
+# The bundle holds a single dataset named \c data, without attributes. This is also the name of the dataset that
+# holds the frame or data cube in a FITS file bundle for output, see the writeFitsOutputBundle() function. SKIRT
+# reads just this dataset from either type of bundle.
+def writeFitsInputBundle(bundlePath, data, *, compression=None):
     compression = _verifiedCompression(compression)
-    image = np.asarray(image, dtype=np.float64)
-    if image.ndim != 2 and image.ndim != 3:
-        raise ut.UserError("An image must have two or three dimensions rather than {}".format(image.ndim))
+    data = np.asarray(data, dtype=np.float64)
+    if data.ndim != 2 and data.ndim != 3:
+        raise ut.UserError("An image must have two or three dimensions rather than {}".format(data.ndim))
 
     with _newBundle(bundlePath, "FITS file (input)") as bundle:
-        _addDataset(bundle, "image", image, np.float64, compression)
+        _addDataset(bundle, "data", data, np.float64, compression)
 
 # -----------------------------------------------------------------
 
@@ -411,6 +413,9 @@ def writeFitsInputBundle(bundlePath, image, *, compression=None):
 # each with the attributes \c unit and \c quantity (if provided). The description and the observer information
 # become attributes of the bundle. A data cube with a single frame is stored as a two-dimensional frame, with
 # a single grid point for the z-axis.
+#
+# SKIRT can also read the bundle as input, in the same way as a FITS file bundle for input: it then uses just the
+# \c data dataset.
 def writeFitsOutputBundle(bundlePath, data, dataUnit, x=None, xUnit=None, y=None, yUnit=None, z=None, zUnit=None, *,
                           quantities=None, description=None, observer=None, compression=None):
     compression = _verifiedCompression(compression)

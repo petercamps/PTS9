@@ -12,9 +12,10 @@
 # a single file. The source files are not changed or removed.
 #
 # The script supports column text files (including those describing an adaptive mesh), SKIRT stored columns files,
-# SKIRT stored table files, FITS files, spatial grid plot files, log files, parameter files, and convergence
-# reports. The type of each file is derived from its filename extension and, where needed, from the file names used
-# by SKIRT or from the contents of the file. See the pts.hdf5.convert module for more information.
+# SKIRT stored table files, FITS files, spatial grid plot files, log files, parameter files, convergence reports,
+# and grain population tables. The type of each file is derived from its filename extension and, where needed,
+# from the file names used by SKIRT or from the contents of the file. See the pts.hdf5.convert module for more
+# information.
 #
 # The script takes the following arguments:
 #  - \em path (positional string argument): the file(s) to be converted, in one of the following forms:
@@ -30,8 +31,11 @@
 #    source file, or for the source directory when converting several files, with the \c .hdf5 filename extension.
 #    That file is placed in the specified directory, or else next to the source file(s).
 #  - \em name (string): the name of the bundle, when converting a single file. By default, each bundle is named
-#    for its source file, including the filename extension (except for the \c .scol extension), so that SKIRT
-#    finds it under the name already used in the ski file.
+#    for its source file, including the filename extension, so that SKIRT finds it under the name already used in
+#    the ski file. As an exception, for a stored columns file the \c .scol extension is replaced by \c .txt: the
+#    file \c stars.scol becomes the bundle \c stars.txt, and the ski file must be adjusted to refer to that name,
+#    because SKIRT 10 no longer accepts the \c .scol extension. If a directory holds both \c stars.scol and
+#    \c stars.txt, neither is converted, and the conflict is reported.
 #  - \em type (string): the type of the file(s), overriding the type derived from the file name. The type is one of
 #    \c columns, \c amr, \c storedcolumns, \c storedtable, \c fitsinput, \c fitsoutput, \c gridplot, or \c text.
 #  - \em names (string): a comma-separated list of column descriptions for a column text file, replacing those in

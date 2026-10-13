@@ -5,12 +5,16 @@
 # **       © Astronomical Observatory, Ghent University          **
 # *****************************************************************
 
-## \package pts.hdf5.convert Converting SKIRT input and output files to bundles in an HDF5 file
+## \package pts.hdf5.convert Converting SKIRT input and output files to and from bundles in an HDF5 file
 #
 # The functions in this module convert the regular files that SKIRT reads as input or writes as output to the
-# corresponding bundle in an HDF5 file, as described in the pts.hdf5.bundle module. This allows, for example,
-# migrating the input files of an existing simulation to an HDF5 file, or collecting the output files of a completed
-# simulation in an HDF5 file. The source files are never changed or removed.
+# corresponding bundle in an HDF5 file, as described in the pts.hdf5.bundle module, and they convert such bundles
+# to the corresponding regular files. This allows, for example, migrating the input files of an existing simulation
+# to an HDF5 file, collecting the output files of a completed simulation in an HDF5 file, or obtaining a regular
+# file for a tool that does not read HDF5 files. The source files and bundles are never changed or removed.
+#
+# The first three sections below describe the conversion of files to bundles, and the remaining sections describe
+# the conversion of bundles to files.
 #
 # File types
 # ----------
@@ -74,9 +78,75 @@
 # the same directory, the convertFiles() function converts neither of them and reports the conflict. Convert one
 # of them, or convert them separately with different bundle names.
 #
+# Bundle types
+# ------------
+#
+# In the opposite direction, there is a conversion function for each type of bundle, listed in the table below.
+# The convertBundle() function converts a single bundle after deriving its type from the datasets and attributes
+# it holds, as described for the pts.hdf5.bundle.inferBundleType() function, and the convertBundles() function
+# does the same for all bundles in a suite or matching a wildcard pattern.
+#
+# | Type | Function | Kind of bundle | Resulting file
+# |------|----------|----------------|---------------
+# | columns | convertTextColumnBundle() | Text column file bundle | Column text file
+# | amr | convertAdaptiveMeshBundle() | AMR text file bundle | Column text file describing an adaptive mesh
+# | storedtable | convertStoredTableBundle() | Stored table bundle | SKIRT stored table file
+# | fits | convertFitsBundle() | FITS file bundle, for input or for output | FITS file
+# | gridplot | convertGridPlotBundle() | Spatial grid plot file bundle | Text file with the data to plot a spatial grid
+# | text | convertTextBundle() | Unstructured text file bundle | Text file
+#
+# No bundle is converted to a file in SKIRT stored columns format, which SKIRT 10 no longer supports. A text column
+# file bundle always becomes a column text file. Converting a stored columns file to a bundle, and that bundle to a
+# file, thus converts the stored columns file \c stars.scol to the column text file \c stars.txt.
+#
+# Input location
+# --------------
+#
+# A bundle to be converted is identified by its bundle path, of the form
+#
+#     <filepath>:<suite>/<bundle>
+#
+# as described in the pts.hdf5.bundle module. The convertBundles() function also accepts the form of the \c -i
+# command line option of SKIRT, i.e. the path of an HDF5 file, optionally followed by a colon and the path of a
+# suite in that file, as in
+#
+#     <dir>/<hdf>:<suite>
+#
+# It then converts all bundles in the root group of the file or in that suite, which are the bundles that SKIRT
+# considers when it looks for an input file. The bundles in nested suites are not converted. The name of the bundle
+# can include wildcards to select the bundles with a matching name.
+#
+# Output directory and file name
+# ------------------------------
+#
+# The functions that convert bundles have an optional \em outPath argument that specifies the existing directory
+# in which the regular files are placed, as the \c -o command line option of SKIRT does when it does not name
+# an HDF5 file. If the argument is omitted, the files are placed in the directory that holds the HDF5 file. This is
+# the directory in which SKIRT looks for a regular input file before it looks for the bundle, so that SKIRT then
+# reads the converted files instead of the bundles.
+#
+# By default, each file is named for its bundle, which is the name that SKIRT uses for the regular file. The
+# functions that convert a single bundle have an optional \em fileName argument to specify another name. An
+# existing file with the same name is replaced, as SKIRT does for its output files.
+#
+# Contents of the converted files
+# -------------------------------
+#
+# A converted file has the form written by SKIRT, and SKIRT reads the same values from it as from the bundle. A
+# bundle stores its numbers as 64-bit floating point numbers. In a text file, each number is written with the
+# smallest number of digits that represents this value exactly, and a column that holds only whole numbers is
+# written without decimal points. Converting a file to a bundle and that bundle to a file therefore preserves all
+# values exactly, although the numbers are not necessarily formatted as in the original file. For a FITS file, see
+# the convertFitsBundle() function.
+#
+# A regular file cannot hold all the information in a bundle. It does not record the attributes that describe the
+# origin of the bundle, and each conversion function describes the further items that are not recorded, such as
+# the unit of the coordinates in a spatial grid plot file.
+#
 
 # -----------------------------------------------------------------
 
+import datetime
 import glob
 import logging
 import os.path
@@ -88,9 +158,11 @@ import astropy.io.fits as fits
 import numpy as np
 import pts.storedtable as stab
 import pts.utils as ut
-from .bundle import resolveBundlePath, writeColumnBundle, writeAdaptiveMeshBundle, \
-                    writeStoredTableBundle, writeFitsInputBundle, writeFitsOutputBundle, writeGridPlotBundle, \
-                    writeTextBundle
+from .bundle import splitBundlePath, resolveBundlePath, findBundles, inferBundleType, \
+                    writeColumnBundle, writeAdaptiveMeshBundle, writeStoredTableBundle, writeFitsInputBundle, \
+                    writeFitsOutputBundle, writeGridPlotBundle, writeTextBundle, \
+                    readColumnBundle, readAdaptiveMeshBundle, readStoredTableBundle, readFitsBundle, \
+                    readGridPlotBundle, readTextBundle
 
 # -----------------------------------------------------------------
 
@@ -111,17 +183,29 @@ _convergenceFileName = re.compile(r"_convergence\.dat$")
 _grainPopulationsFileName = re.compile(r"_grainpops_\d+\.dat$")
 _gridPlotFileName = re.compile(r"_grid_(xy|xz|yz|xyz)\.dat$")
 
-# the header cards written by SKIRT to describe the observer, with the corresponding bundle attribute
+# the header cards written by SKIRT to describe the observer, with the corresponding bundle attribute, and
+# the comment written by SKIRT for each of these cards
 _observerCards = (("CROTA1", "inclination"), ("CROTA2", "azimuth"), ("CROTA3", "roll"), ("REDSHIFT", "redshift"),
                   ("DISTLUMI", "luminosity_distance"), ("DISTANGD", "angular_diameter_distance"),
                   ("DISTUNIT", "distance_unit"))
+_observerComments = dict(CROTA1="Inclination angle, in deg", CROTA2="Azimuth angle, in deg",
+                         CROTA3="Roll angle, in deg", REDSHIFT="Redshift (if zero, distances are equal)",
+                         DISTLUMI="Luminosity distance", DISTANGD="Angular diameter distance",
+                         DISTUNIT="Units of distances")
+
+# the syntax of a unit string in the header of a column text file, as defined by SKIRT
+_unitSyntax = re.compile(r"[a-zA-Z0-9/]*")
+
+# the syntax of a name or unit string in a SKIRT stored table file
+_storedStringSyntax = re.compile(r"[!-~]{1,8}")
 
 # the syntax of the element in a SKIRT parameter file that specifies the unit system of the simulation, and
 # the unit of length for each of the unit systems
 _unitSystemSyntax = re.compile(r"<units\b[^>]*>\s*<(\w+)")
 _lengthUnits = dict(SIUnits="m", StellarUnits="AU", ExtragalacticUnits="pc")
 
-# the number of text lines converted to numbers at a time when reading a file that cannot be read as a whole
+# the number of text lines converted to numbers at a time when reading a file that cannot be read as a whole,
+# and the number of rows formatted as text at a time when writing a file
 _chunkSize = 100000
 
 # -----------------------------------------------------------------
@@ -697,6 +781,362 @@ def convertTextFile(inFilePath, outPath=None, *, bundleName=None, textType=None)
 
 # -----------------------------------------------------------------
 
+## This function converts the specified bundle in an HDF5 file to the corresponding regular SKIRT input or output
+# file, and returns the absolute path of that file. It derives the type of the bundle from its contents, as
+# described for the pts.hdf5.bundle.inferBundleType() function, and calls the conversion function for that type.
+#
+# The function accepts the following arguments:
+#  - \em bundlePath: the bundle path of the bundle to be converted, as described in the pts.hdf5.bundle module.
+#  - \em outPath: the output directory, as described in the header of this module.
+#  - \em fileName: the name of the file; by default the file is named for the bundle.
+#  - \em names, \em units: the column descriptions and units for a text column file bundle or an AMR text file
+#    bundle; see convertTextColumnBundle().
+#
+# The function raises a user error if the type of the bundle is not recognized, or if the bundle cannot be converted.
+def convertBundle(bundlePath, outPath=None, *, fileName=None, names=None, units=None):
+    # determine the type of the bundle
+    bundleType = inferBundleType(bundlePath)
+    if bundleType is None:
+        raise ut.UserError("Cannot derive the type of bundle {}: it does not hold the datasets of one of the " \
+                           "bundles defined by SKIRT".format(bundlePath))
+
+    # verify that the options are relevant for this type
+    if (names is not None or units is not None) and bundleType not in ("columns", "amr"):
+        raise ut.UserError("Column descriptions and units cannot be specified for a bundle of type '{}'" \
+                           .format(bundleType))
+
+    # call the appropriate conversion function
+    if bundleType == "columns":
+        return convertTextColumnBundle(bundlePath, outPath, fileName=fileName, names=names, units=units)
+    if bundleType == "amr":
+        return convertAdaptiveMeshBundle(bundlePath, outPath, fileName=fileName, names=names, units=units)
+    if bundleType == "storedtable":
+        return convertStoredTableBundle(bundlePath, outPath, fileName=fileName)
+    if bundleType == "fits":
+        return convertFitsBundle(bundlePath, outPath, fileName=fileName)
+    if bundleType == "gridplot":
+        return convertGridPlotBundle(bundlePath, outPath, fileName=fileName)
+    return convertTextBundle(bundlePath, outPath, fileName=fileName)
+
+# -----------------------------------------------------------------
+
+## This function converts a set of bundles in an HDF5 file to regular SKIRT input or output files in a single
+# directory, and returns a list with the absolute paths of the files that were written. It calls the
+# convertBundle() function for each bundle.
+#
+# The \em inPath argument specifies the bundles to be converted, as described in the header of this module and
+# for the pts.hdf5.bundle.findBundles() function, in one of the following ways:
+#  - the path of an HDF5 file, optionally followed by a colon and the path of a suite in that file: all bundles in
+#    the root group of the file or in that suite, but not in nested suites;
+#  - the bundle path of a single bundle;
+#  - a bundle path with wildcards in the name of the bundle: all bundles in the suite matching the pattern.
+#
+# The \em outPath argument specifies the output directory, as described in the header of this module. Each file
+# is named for its bundle.
+#
+# A bundle with a type that is not recognized is skipped. If a bundle cannot be converted, the function logs an
+# error message and continues with the next bundle.
+def convertBundles(inPath, outPath=None):
+    # get the bundles to be converted, and resolve the output directory once
+    bundlePaths = findBundles(inPath)
+    if len(bundlePaths) == 0:
+        raise ut.UserError("There are no bundles to be converted for '{}'".format(inPath))
+    dirpath = _outputDirectory(bundlePaths[0], outPath)
+
+    # convert each of the bundles with a recognized type
+    filePaths = []
+    numSkipped = 0
+    numFailed = 0
+    for bundlePath in bundlePaths:
+        try:
+            if inferBundleType(bundlePath) is None:
+                logging.info("Skipping bundle with unrecognized type: {}".format(bundlePath))
+                numSkipped += 1
+            else:
+                filePaths.append(convertBundle(bundlePath, dirpath))
+        except ut.UserError as error:
+            logging.error("Cannot convert {}: {}".format(bundlePath, error.message))
+            numFailed += 1
+        except OSError as error:
+            logging.error("Cannot convert {}: {}".format(bundlePath, error))
+            numFailed += 1
+
+    # log a summary
+    message = "Converted {} bundle(s) to files in {}".format(len(filePaths), dirpath)
+    if numSkipped > 0: message += "; skipped {} bundle(s)".format(numSkipped)
+    if numFailed > 0: message += "; failed to convert {} bundle(s)".format(numFailed)
+    logging.info(message)
+    return filePaths
+
+# -----------------------------------------------------------------
+
+## This function converts a text column file bundle to a SKIRT column text file, and returns the absolute path
+# of that file. The file has the form written by SKIRT:
+#
+#  - The description of the bundle, if there is one, becomes one or more comment lines at the start of the file.
+#  - There is a header line with column information for each column, of the form "# column 1: description (unit)",
+#    where the description is the name of the dataset for the column, after undoing the adjustments described for
+#    the pts.hdf5.bundle.datasetNames() function, and the unit is the unit of that dataset. A unit that is an
+#    empty string is written as "1", the unit of a dimensionless quantity.
+#  - Each further line holds the values for one row, separated by a single space, as described in the header of
+#    this module.
+#
+# The header of a column text file cannot describe a column without specifying its unit. If none of the datasets
+# in the bundle has a unit, the file is therefore written without column information, just as the file from which
+# such a bundle is usually converted, and SKIRT uses its default units, as it does for the bundle. The column
+# descriptions are not recorded in this case, and the function logs a warning unless they are the generic names
+# given to the columns of a file without column information. If some but not all datasets have a unit, the function
+# raises a user error. In both cases, the \em units argument can provide the missing units.
+#
+# A description cannot contain parentheses in the header of a column text file; they are replaced by square
+# brackets, and the function logs a warning.
+#
+# The function accepts the following arguments:
+#  - \em bundlePath: the bundle path of the bundle to be converted, as described in the pts.hdf5.bundle module.
+#  - \em outPath: the output directory, as described in the header of this module.
+#  - \em fileName: the name of the file; by default the file is named for the bundle.
+#  - \em names: the column descriptions, as a sequence of strings or as a single string with a comma-separated
+#    list, replacing the descriptions derived from the names of the datasets.
+#  - \em units: the column units, in the same form, replacing the units of the datasets.
+def convertTextColumnBundle(bundlePath, outPath=None, *, fileName=None, names=None, units=None):
+    outpath = _filePathFor(bundlePath, outPath, fileName)
+    table = readColumnBundle(bundlePath)
+    header = _columnHeader(bundlePath, table, names, units)
+
+    with _createFile(outpath) as outfile:
+        outfile.write(header)
+        wholes = [ _holdsWholeNumbers(column) for column in table["columns"] ]
+        for start in range(0, len(table["columns"][0]), _chunkSize):
+            lines = _rowLines([ column[start:start+_chunkSize] for column in table["columns"] ], wholes)
+            outfile.write("\n".join(lines.tolist()) + "\n")
+
+    logging.info("Created column text file: {}".format(outpath))
+    return outpath
+
+# -----------------------------------------------------------------
+
+## This function converts an AMR text file bundle to a SKIRT column text file that describes an adaptive mesh,
+# and returns the absolute path of that file. The file lists the nodes of the mesh in the order in which they occur
+# in the bundle. A nonleaf node becomes a line that starts with an exclamation mark and specifies the number of
+# subdivisions of that node in each of the three spatial directions. A leaf node becomes a line with the values of
+# its properties, as in a regular column text file. The header of the file, including the column information, is
+# written as described for the convertTextColumnBundle() function, and the arguments of this function are the same
+# as well.
+def convertAdaptiveMeshBundle(bundlePath, outPath=None, *, fileName=None, names=None, units=None):
+    outpath = _filePathFor(bundlePath, outPath, fileName)
+    mesh = readAdaptiveMeshBundle(bundlePath)
+    header = _columnHeader(bundlePath, mesh, names, units)
+
+    with _createFile(outpath) as outfile:
+        outfile.write(header)
+        wholes = [ _holdsWholeNumbers(column) for column in mesh["columns"] ]
+        leafStart = 0
+        nonLeafStart = 0
+        for start in range(0, len(mesh["isLeaf"]), _chunkSize):
+            # get the nodes in this chunk, and the corresponding ranges of leaf and nonleaf nodes
+            isLeaf = mesh["isLeaf"][start:start+_chunkSize]
+            leafStop = leafStart + int(np.count_nonzero(isLeaf))
+            nonLeafStop = nonLeafStart + len(isLeaf) - (leafStop - leafStart)
+
+            # format the lines for both kinds of nodes, and merge them in the order of the nodes
+            lines = np.empty(len(isLeaf), dtype=object)
+            lines[isLeaf] = _rowLines([ column[leafStart:leafStop] for column in mesh["columns"] ], wholes)
+            subdivisions = mesh["topology"][nonLeafStart:nonLeafStop].astype(str)
+            lines[~isLeaf] = np.char.add("! ", _rowLines([ subdivisions[:, index] for index in range(3) ]))
+            outfile.write("\n".join(lines.tolist()) + "\n")
+            leafStart = leafStop
+            nonLeafStart = nonLeafStop
+
+    logging.info("Created adaptive mesh file: {}".format(outpath))
+    return outpath
+
+# -----------------------------------------------------------------
+
+## This function converts a stored table bundle to a file in SKIRT stored table format, and returns the absolute
+# path of that file. The axes and quantities are named for the datasets in the bundle, after undoing the
+# adjustments described for the pts.hdf5.bundle.datasetNames() function. The quantities are written in the
+# alphabetical order of the names of their datasets, because a bundle does not record their order; SKIRT locates
+# a quantity by its name.
+#
+# The function accepts the following arguments:
+#  - \em bundlePath: the bundle path of the bundle to be converted, as described in the pts.hdf5.bundle module.
+#  - \em outPath: the output directory, as described in the header of this module.
+#  - \em fileName: the name of the file; by default the file is named for the bundle.
+#
+# The stored table format imposes some restrictions that do not apply to a bundle. The function raises a user
+# error if the name of the file does not have the \c .stab filename extension, if there are more than nine axes or
+# quantities, or if a name or a unit does not consist of one to eight printable 7-bit ASCII characters other
+# than white space.
+def convertStoredTableBundle(bundlePath, outPath=None, *, fileName=None):
+    outpath = _filePathFor(bundlePath, outPath, fileName)
+    if outpath.suffix != ".stab":
+        raise ut.UserError("Bundle {} cannot be converted to a file named '{}', because a stored table file must " \
+                           "have the .stab filename extension; specify another file name" \
+                           .format(bundlePath, outpath.name))
+    table = readStoredTableBundle(bundlePath)
+
+    # verify the restrictions of the stored table format
+    if len(table["axisNames"]) > 9 or len(table["quantityNames"]) > 9:
+        raise ut.UserError("Bundle {} cannot be converted to a stored table file, which holds at most nine axes " \
+                           "and nine quantities".format(bundlePath))
+    for string in table["axisNames"] + table["axisUnits"] + table["quantityNames"] + table["quantityUnits"]:
+        if not _storedStringSyntax.fullmatch(string):
+            raise ut.UserError("Bundle {} cannot be converted to a stored table file, because the name or unit " \
+                               "'{}' does not consist of one to eight printable ASCII characters" \
+                               .format(bundlePath, string))
+
+    try:
+        stab.writeStoredTable(outpath, **table)
+    except (OSError, ValueError) as error:
+        raise ut.UserError("Cannot create stored table file '{}': {}".format(outpath, error)) from None
+    return outpath
+
+# -----------------------------------------------------------------
+
+## This function converts a FITS file bundle, for input or for output, to a FITS file with the structure of the
+# FITS files written by SKIRT, and returns the absolute path of that file. The file holds the information in
+# the bundle as follows:
+#
+#  - The data becomes the image in the primary header-data unit, and its unit the value of the BUNIT card. The
+#    pixel values are written as 32-bit floating point numbers, as SKIRT does, if this represents all values in
+#    the bundle exactly, and as 64-bit floating point numbers otherwise. A two-dimensional frame that has a z-axis
+#    with a single grid point is written as a data cube with a single frame.
+#  - An x-axis or y-axis with regularly spaced grid points is described by the CRPIX, CRVAL, and CDELT cards for
+#    that axis, with the reference pixel at the center of the axis. This applies only if these cards reproduce all
+#    grid points to within the rounding errors of a calculation with 64-bit floating point numbers. For any other
+#    x-axis or y-axis, and for the z-axis, the grid points are listed in a binary table extension ("X-axis coordinate
+#    values", and so on) with a single column named GRID_POINTS, which holds 64-bit floating point numbers. The unit
+#    of each axis becomes the value of its CUNIT card.
+#  - The inclination, azimuth, and roll angles of the observer, the redshift, and the distances, if present,
+#    become the CROTA1, CROTA2, CROTA3, REDSHIFT, DISTLUMI, DISTANGD, and DISTUNIT cards.
+#
+# This is the form in which the convertFitsOutputFile() and pts.simulation.fits.getFitsAxes() functions read the
+# information. The description of the bundle, and the physical quantities represented by the data and by the
+# axes, are not recorded, because a FITS file written by SKIRT has no place for them. The ORIGIN card names PTS,
+# and the DATE card provides the time at which the file is written.
+#
+# For a FITS file bundle for input, which holds just the data, the file holds just the image, and SKIRT reads the
+# same pixel values from it as from the bundle.
+#
+# The function accepts the following arguments:
+#  - \em bundlePath: the bundle path of the bundle to be converted, as described in the pts.hdf5.bundle module.
+#  - \em outPath: the output directory, as described in the header of this module.
+#  - \em fileName: the name of the file; by default the file is named for the bundle.
+def convertFitsBundle(bundlePath, outPath=None, *, fileName=None):
+    outpath = _filePathFor(bundlePath, outPath, fileName)
+    frame = readFitsBundle(bundlePath)
+
+    # use 32-bit floating point numbers if these represent all values exactly
+    data = frame["data"]
+    with np.errstate(over="ignore", invalid="ignore"):
+        single = data.astype(np.float32)
+    pixels = single if np.array_equal(single.astype(np.float64), data, equal_nan=True) else data
+    if pixels.ndim == 2 and frame["z"] is not None: pixels = pixels.reshape((1,) + pixels.shape)
+
+    try:
+        # store the data in the primary header-data unit, with the same basic cards as SKIRT
+        hdu = fits.PrimaryHDU(pixels)
+        header = hdu.header
+        header["BSCALE"] = (1, "Array value scale")
+        header["BZERO"] = (0, "Array value offset")
+        header["DATE"] = (datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+                          "Date and time of creation (UTC)")
+        header["ORIGIN"] = ("Python Toolkit SKIRT", "Astronomical Observatory, Ghent University")
+        if frame["dataUnit"] is not None:
+            header["BUNIT"] = (frame["dataUnit"], "Physical unit of the array values")
+
+        # describe each axis by cards for a regular linear grid, or by a table that lists the grid points
+        tables = []
+        for number, key in enumerate("xyz", 1):
+            grid, unit, axis = frame[key], frame[key + "Unit"], key.upper()
+            linear = grid is not None and number < 3 and _isLinear(grid)
+            if linear:
+                header["CRPIX{}".format(number)] = ((len(grid) + 1) / 2,
+                                                    "{}-axis coordinate system reference pixel".format(axis))
+                header["CRVAL{}".format(number)] = (float(grid[0] + grid[-1]) / 2,
+                                                    "Coordinate value at {}-axis reference pixel".format(axis))
+                header["CDELT{}".format(number)] = (float(grid[-1] - grid[0]) / (len(grid) - 1),
+                                                    "Coordinate increment along {}-axis".format(axis))
+            if unit is not None:
+                header["CUNIT{}".format(number)] = (unit, "Physical units of the {}-axis".format(axis))
+            if linear:
+                header["CTYPE{}".format(number)] = (" ", "Linear {} coordinates".format(axis))
+            elif grid is not None:
+                # keep the name of the extension as SKIRT writes it, rather than in uppercase
+                column = fits.Column(name="GRID_POINTS", array=grid, unit=unit, format="D")
+                with fits.conf.set_temp("extension_name_case_sensitive", True):
+                    tables.append(fits.BinTableHDU.from_columns([column],
+                                                                name="{}-axis coordinate values".format(axis)))
+
+        # add the observer information
+        for card, key in _observerCards:
+            if key in frame["observer"]: header[card] = (frame["observer"][key], _observerComments[card])
+
+        fits.HDUList([hdu] + tables).writeto(outpath, overwrite=True)
+    except (OSError, ValueError) as error:
+        raise ut.UserError("Cannot create FITS file '{}': {}".format(outpath, error)) from None
+
+    logging.info("Created FITS file: {}".format(outpath))
+    return outpath
+
+# -----------------------------------------------------------------
+
+## This function converts a spatial grid plot file bundle to a text file with the data to plot a spatial grid, in
+# the form written by the SpatialGridPlotProbe in SKIRT, and returns the absolute path of that file. Each line
+# in the file holds the two or three coordinates of a point, separated by a tab character. The points of a polyline
+# are on consecutive lines, and each polyline is followed by an empty line. The file has no header, so that
+# the unit of the coordinates, which the bundle records, is not written to the file.
+#
+# The function accepts the following arguments:
+#  - \em bundlePath: the bundle path of the bundle to be converted, as described in the pts.hdf5.bundle module.
+#  - \em outPath: the output directory, as described in the header of this module.
+#  - \em fileName: the name of the file; by default the file is named for the bundle.
+def convertGridPlotBundle(bundlePath, outPath=None, *, fileName=None):
+    outpath = _filePathFor(bundlePath, outPath, fileName)
+    plot = readGridPlotBundle(bundlePath)
+    points = plot["points"]
+
+    # a polyline ends at the last point, and at each point that is followed by the first point of another polyline
+    ends = np.ones(len(points), dtype=bool)
+    ends[:-1] = plot["moveto"][1:]
+
+    with _createFile(outpath) as outfile:
+        wholes = [ _holdsWholeNumbers(points[:, index]) for index in range(points.shape[1]) ]
+        for start in range(0, len(points), _chunkSize):
+            stop = start + _chunkSize
+            lines = _rowLines([ points[start:stop, index] for index in range(points.shape[1]) ], wholes, "\t")
+            lines = np.where(ends[start:stop], np.char.add(lines, "\n"), lines)
+            outfile.write("\n".join(lines.tolist()) + "\n")
+
+    logging.info("Created spatial grid plot file: {}".format(outpath))
+    return outpath
+
+# -----------------------------------------------------------------
+
+## This function converts an unstructured text file bundle to a text file with exactly the text held by the bundle,
+# encoded in UTF-8, and returns the absolute path of that file. This form serves for the log file, for the
+# parameter file in XML format, for the convergence report written by the ConvergenceInfoProbe, and for the grain
+# population table written by the DustGrainPopulationsProbe.
+#
+# The function accepts the following arguments:
+#  - \em bundlePath: the bundle path of the bundle to be converted, as described in the pts.hdf5.bundle module.
+#  - \em outPath: the output directory, as described in the header of this module.
+#  - \em fileName: the name of the file; by default the file is named for the bundle.
+def convertTextBundle(bundlePath, outPath=None, *, fileName=None):
+    outpath = _filePathFor(bundlePath, outPath, fileName)
+    text = readTextBundle(bundlePath)["text"]
+
+    # write the text without changing its line endings
+    try:
+        outpath.write_bytes(text.encode("utf-8"))
+    except OSError as error:
+        raise ut.UserError("Cannot create file '{}': {}".format(outpath, error)) from None
+
+    logging.info("Created text file: {}".format(outpath))
+    return outpath
+
+# -----------------------------------------------------------------
+
 ## This helper class holds the information obtained from the header of a column text file by the _scanColumnFile()
 # function: the description assembled from the comment lines that precede the column information and the data (or
 # None), the descriptions and units listed in the column information lines, the number of values on the first data
@@ -904,5 +1344,134 @@ def _fitsAxis(inpath, hdul, number, size):
         raise ut.UserError("Axis {} in FITS file {} has {} grid point(s) for {} pixel(s)" \
                            .format(number, inpath, len(grid), size))
     return grid, unit
+
+# -----------------------------------------------------------------
+
+## This helper function returns the absolute path of the directory in which the regular file for the specified
+# bundle is placed, given the output location specified by the caller: that location, which must be an existing
+# directory, or else the directory that holds the HDF5 file.
+def _outputDirectory(bundlePath, outPath):
+    if outPath is None or str(outPath) == "":
+        return ut.absPath(splitBundlePath(bundlePath)[0]).parent
+    dirpath = ut.absPath(outPath)
+    if not dirpath.is_dir():
+        if ".hdf5:" in str(outPath) or str(outPath).endswith(".hdf5"):
+            raise ut.UserError("The output location for converting a bundle to a regular file must be a directory " \
+                               "rather than an HDF5 file: '{}'".format(outPath))
+        raise ut.UserError("Output directory does not exist: '{}'".format(dirpath))
+    return dirpath
+
+## This helper function returns the absolute path of the regular file for converting the specified bundle, given
+# the output location and the file name specified by the caller, if any.
+def _filePathFor(bundlePath, outPath, fileName):
+    filePath, groupPath = splitBundlePath(bundlePath)
+    if not groupPath:
+        raise ut.UserError("Path does not specify the name of a bundle in the HDF5 file: '{}'".format(bundlePath))
+
+    # the file is named for the bundle, unless the caller specifies another name
+    name = str(fileName) if fileName else groupPath.rpartition("/")[2]
+    if name in (".", "..") or pathlib.PurePath(name).name != name:
+        raise ut.UserError("'{}' is not the name of a file; specify a file name without a directory".format(name))
+    outpath = _outputDirectory(bundlePath, outPath) / name
+
+    # never replace the HDF5 file that holds the bundle, or a directory
+    if ut.absPath(outpath) == ut.absPath(filePath):
+        raise ut.UserError("Converting bundle {} would replace the HDF5 file that holds it; specify another file " \
+                           "name or output directory".format(bundlePath))
+    if outpath.is_dir():
+        raise ut.UserError("Cannot create file '{}' because there is a directory with that path".format(outpath))
+    return outpath
+
+## This helper function creates the text file with the specified path, replacing an existing file, and returns the
+# open file. The file is encoded in UTF-8 and has Unix line endings on all platforms. The function raises a user
+# error if the file cannot be created.
+def _createFile(outpath):
+    try:
+        return open(outpath, "w", encoding="utf-8", newline="\n")
+    except OSError as error:
+        raise ut.UserError("Cannot create file '{}': {}".format(outpath, error)) from None
+
+## This helper function returns the header of the column text file for the specified bundle: the comment lines
+# with the description of the bundle, and the lines with column information, if the units of the columns are
+# known. The second argument is the dictionary with the contents of the bundle, as returned by the
+# pts.hdf5.bundle.readColumnBundle() or pts.hdf5.bundle.readAdaptiveMeshBundle() function. The last two arguments
+# are the descriptions and units specified by the caller, if any, which replace those in the bundle.
+def _columnHeader(bundlePath, table, names, units):
+    # use the descriptions and units specified by the caller, or else those in the bundle
+    numColumns = len(table["columns"])
+    names = _stringList(names)
+    units = _stringList(units)
+    if names is not None and len(names) != numColumns:
+        raise ut.UserError("{} column description(s) were specified for the {} column(s) in bundle {}" \
+                           .format(len(names), numColumns, bundlePath))
+    if units is not None and len(units) != numColumns:
+        raise ut.UserError("{} unit(s) were specified for the {} column(s) in bundle {}" \
+                           .format(len(units), numColumns, bundlePath))
+    if names is None: names = table["names"]
+    if units is None: units = table["units"]
+
+    # start with the description of the bundle
+    lines = []
+    if table["description"]:
+        lines += [ ("# " + line).rstrip() for line in table["description"].splitlines() ]
+
+    # without any units, there can be no column information
+    numUnits = len([ unit for unit in units if unit is not None ])
+    if numUnits == 0:
+        if names != [ "column{}".format(index) for index in range(numColumns) ]:
+            logging.warning("Bundle {} does not specify the units of its columns: the file gets no column " \
+                            "information, so that the column descriptions are not recorded".format(bundlePath))
+    elif numUnits < numColumns:
+        raise ut.UserError("Bundle {} specifies the unit of some but not all of its columns, which cannot be " \
+                           "represented in a column text file; specify the units of all columns".format(bundlePath))
+
+    # add a line with column information for each column
+    else:
+        for number, (name, unit) in enumerate(zip(names, units), 1):
+            description = " ".join(name.replace("(", "[").replace(")", "]").split())
+            if "(" in name or ")" in name:
+                logging.warning("The parentheses in the description '{}' of column {} in bundle {} have been " \
+                                "replaced by square brackets".format(name, number, bundlePath))
+            unit = unit.strip()
+            if not _unitSyntax.fullmatch(unit):
+                raise ut.UserError("The unit '{}' of column {} in bundle {} cannot be written to the header of a " \
+                                   "column text file, where a unit consists of letters, digits, and slashes" \
+                                   .format(unit, number, bundlePath))
+            lines.append("# column {}: {} ({})".format(number, description, unit if unit else "1"))
+
+    return "".join([ line + "\n" for line in lines ])
+
+## This helper function returns True if all values in the specified array of floating point numbers are whole
+# numbers that are represented exactly, including their sign, when they are written without a decimal point.
+def _holdsWholeNumbers(values):
+    with np.errstate(invalid="ignore"):
+        return bool(np.all(np.isfinite(values)) and np.all(values == np.rint(values)) \
+                    and np.all(np.abs(values) < 2**53) and not np.any(np.signbit(values) & (values == 0)))
+
+## This helper function formats the rows of a table as text, and returns an array with a string for each row,
+# without line endings. The first argument is a sequence of arrays of the same length, one for each column. The
+# values in a row are separated by the specified separator. The optional second argument is a sequence with
+# a Boolean for each column: True if the column holds whole numbers, as determined by the _holdsWholeNumbers()
+# function for the complete column, which are then written without a decimal point. A floating point number is
+# written with the smallest number of digits that represents its value exactly.
+def _rowLines(columns, wholes=None, separator=" "):
+    lines = None
+    for index, column in enumerate(columns):
+        if wholes is not None and wholes[index]: column = column.astype(np.int64)
+        strings = column.astype(str)
+        lines = strings if lines is None else np.char.add(np.char.add(lines, separator), strings)
+    return lines
+
+## This helper function returns True if the specified one-dimensional array of grid points forms a regular linear
+# grid, with at least two points and a nonzero increment. The grid points must be regularly spaced to within the
+# rounding errors of a calculation with 64-bit floating point numbers, so that the two end points and the number
+# of points reproduce all grid points. Grid points listed with fewer digits, as in a table of a FITS file written
+# by SKIRT, usually do not qualify.
+def _isLinear(grid):
+    if len(grid) < 2 or not np.all(np.isfinite(grid)): return False
+    increment = (grid[-1] - grid[0]) / (len(grid) - 1)
+    if increment == 0: return False
+    tolerance = min(1e-9 * abs(increment), 1e-12 * max(abs(grid[0]), abs(grid[-1])))
+    return bool(np.allclose(grid, grid[0] + increment * np.arange(len(grid)), rtol=0, atol=tolerance))
 
 # -----------------------------------------------------------------

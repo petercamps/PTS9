@@ -66,8 +66,13 @@ class Skirt:
     #
     # - \em skiFilePath: the file path for the configuration file (\em ski file) to be executed, interpreted as
     #   as described for the pts.utils.absPath() function.
-    # - \em inDirPath: a string specifying the absolute or relative directory path for simulation input files.
-    # - \em outDirPath: a string specifying the absolute or relative directory path for simulation output files.
+    # - \em inDirPath: a string specifying the absolute or relative directory path for simulation input files,
+    #   optionally followed by the name of an HDF5 file in that directory and the path of a suite in that file, as
+    #   for the \c -i command line option of SKIRT.
+    # - \em outDirPath: a string specifying the absolute or relative directory path for simulation output files,
+    #   optionally followed by the name of an HDF5 file in that directory and the path of a suite in that file, as
+    #   for the \c -o command line option of SKIRT. The returned Simulation instance refers to the directory, in
+    #   which SKIRT always writes the log file.
     # - \em skiRelative: if \c True, the simulation input/output directory paths are relative to the directory of the
     #   \em ski file being executed; if \c False or missing, they are relative to the current directory.
     #
@@ -156,7 +161,8 @@ class Skirt:
         else:
             self._process = subprocess.Popen(arguments, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        return Simulation(skiFilePath=skiFilePath, inDirPath=inpath, outDirPath=outpath, process=self._process)
+        return Simulation(skiFilePath=skiFilePath, inDirPath=_directoryPath(inpath),
+                          outDirPath=_directoryPath(outpath), process=self._process)
 
     ## This function returns True if the simulation started with the most recent call to the execute() function
     # is still running, and False otherwise.
@@ -168,5 +174,19 @@ class Skirt:
                 # allow the process object to be freed
                 self._process = None
         return False
+
+# -----------------------------------------------------------------
+
+## This helper function returns the directory part of the specified absolute path, given as the value of the \c -i
+# or \c -o command line option of SKIRT: the path itself if it is an existing directory or if it does not name an
+# HDF5 file, and otherwise the directory that holds the HDF5 file. As in SKIRT, the path names an HDF5 file if it
+# includes the \c .hdf5 filename extension followed by a colon, or if it ends with that extension.
+def _directoryPath(path):
+    if path.is_dir(): return path
+    text = str(path)
+    index = text.find(".hdf5:")
+    if index >= 0: return ut.absPath(text[:index+5]).parent
+    if text.endswith(".hdf5"): return path.parent
+    return path
 
 # -----------------------------------------------------------------

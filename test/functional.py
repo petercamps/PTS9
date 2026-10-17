@@ -477,9 +477,11 @@ def getDifferenceStatistics(sim, name, bundleType=None):
 # regular files in the specified output directory. It returns two lists and a dictionary: the names of the bundles
 # for which the test case also wrote a regular file, which is not replaced; the names of the bundles that cannot be
 # converted; and a dictionary that maps the name of each converted file to the type of its bundle, as returned by the
-# pts.hdf5.inferBundleType() function. Bundles with a type that is not recognized are ignored. The function does
-# nothing if the HDF5 file does not exist, because a test case that writes no bundles does not create it. The
-# informational messages logged by the conversion functions are suppressed.
+# pts.hdf5.inferBundleType() function. Bundles with a type that is not recognized are ignored, and so are the bundles
+# for the log file and the parameter file (with a name ending in \c _log.txt or \c _parameters.xml), because SKIRT
+# keeps these files as regular files in the output directory next to their bundles. The function does nothing if the
+# HDF5 file does not exist, because a test case that writes no bundles does not create it. The informational messages
+# logged by the conversion functions are suppressed.
 def _convertOutputBundles(location, outdir):
     import pts.hdf5 as hdf
 
@@ -492,6 +494,7 @@ def _convertOutputBundles(location, outdir):
         try:
             for bundlePath in hdf.findBundles(location):
                 name = hdf.splitBundlePath(bundlePath)[1].rpartition("/")[2]
+                if name.endswith(("_log.txt", "_parameters.xml")): continue
                 try:
                     bundleType = hdf.inferBundleType(bundlePath)
                     if bundleType is not None:

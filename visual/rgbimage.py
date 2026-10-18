@@ -206,9 +206,9 @@ class RGBImage:
                 72, 0, 1, 0 )                      # 172: YResolution value
                                                    # 180: Image data
             out = open(path, 'wb')
-            out.write(np.array(header,dtype=np.uint16).tostring())
+            out.write(np.array(header,dtype=np.uint16).tobytes())
             data = self.scaledPixelArray(0,65535.99)
-            out.write(np.flipud(np.rollaxis(data,1)).astype(np.uint16).tostring())
+            out.write(np.flipud(np.rollaxis(data,1)).astype(np.uint16).tobytes())
             out.close()
 
         # standard 8-bit image file
@@ -406,7 +406,7 @@ class RGBImage:
                 self._dpil = PIL.Image.frombytes("RGB", self._shape, self._dbuf, "raw", "RGBX", 0, 1)
             elif self._darr is not None:
                 data = self.scaledPixelArray(0,255.999)
-                buf = np.rollaxis(data,1).astype(np.uint8).tostring()
+                buf = np.rollaxis(data,1).astype(np.uint8).tobytes()
                 self._dpil = PIL.Image.frombytes("RGB", self._shape, buf, "raw", "RGB", 0, -1)
             else:
                 raise ValueError("No source data for conversion to PIL image")
@@ -424,7 +424,7 @@ class RGBImage:
             elif self._darr is not None:
                 data = self.scaledPixelArray(0,255.999)
                 self._dbuf = np.dstack((np.flipud(np.rollaxis(data, 1)).astype(np.uint8),
-                                        np.zeros(self._shape[::-1], np.uint8))).tostring()
+                                        np.zeros(self._shape[::-1], np.uint8))).tobytes()
             else:
                 raise ValueError("No source data for conversion to buffer")
         if invalidate:
@@ -437,10 +437,10 @@ class RGBImage:
     def _ensureArr(self, invalidate=True):
         if self._darr is None:
             if self._dpil is not None:
-                self._darr = np.fromstring(self._dpil.tobytes("raw", "RGB", 0, -1), np.uint8).astype(np.float64)
+                self._darr = np.frombuffer(self._dpil.tobytes("raw", "RGB", 0, -1), np.uint8).astype(np.float64)
                 self._darr = np.rollaxis(np.reshape(self._darr, (self._shape[1], self._shape[0], 3)), 1)
             elif self._dbuf is not None:
-                self._darr = np.fromstring(self._dbuf, np.uint8).astype(np.float64)
+                self._darr = np.frombuffer(self._dbuf, np.uint8).astype(np.float64)
                 self._darr = np.delete(np.reshape(self._darr, (self._shape[1], self._shape[0], 4)), 3, 2)
                 self._darr = np.rollaxis(np.flipud(self._darr), 1)
             else:

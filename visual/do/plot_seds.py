@@ -9,7 +9,9 @@
 #
 # This script creates plots of the SEDs produced by one or more SKIRT simulations. It takes the following arguments:
 #  - \em simDirPath (positional string argument): the path to the SKIRT simulation output directory,
-#                                                 or "." for the current directory
+#                                                 or "." for the current directory; output bundles in an HDF5 file are
+#                                                 located through the log file, or by appending the HDF5 file and suite
+#                                                 to the path, as for the -o option of SKIRT
 #  - \em prefix (string): the prefix of the simulation to handle; by default handles all simulations in the directory
 #  - \em instr (string): the name of the instrument to handle; by default handles all instruments in the simulation
 #  - \em wmin (float): smallest wavelength on the horizontal axis; default is 0.1

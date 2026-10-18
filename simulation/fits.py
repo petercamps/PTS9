@@ -10,6 +10,11 @@
 # This module offers functions for reading frames and data cubes from SKIRT FITS output files with support for units,
 # and for writing frames and data cubes to FITS files with the same structure as SKIRT output files.
 #
+# The functions that read an output file also accept the corresponding FITS file bundle in an HDF5 file, specified
+# as a pts.utils.BundlePath instance or as a string with a bundle path (see the pts.utils.isBundlePath() function).
+# They then return the same information as for the regular file, except that the values are not rounded to 32-bit
+# floating point numbers, as they are in a FITS file written by SKIRT. This requires the \c h5py package.
+#
 
 # -----------------------------------------------------------------
 
@@ -26,9 +31,20 @@ from .units import unit as smunit
 # [x, y] for a data frame and [x, y, z] for a data cube, where x and y are usually spatial axes and z is often the
 # wavelength axis. The appropriate units for the array values are obtained from the FITS file header written by SKIRT.
 #
-# The file path is interpreted as described for the pts.utils.absPath() function.
+# The file path is interpreted as described for the pts.utils.absPath() function. The path can also refer to a
+# FITS file bundle in an HDF5 file.
 #
 def loadFits(path):
+    # read a bundle
+    if ut.isBundlePath(path):
+        import pts.hdf5 as h5
+        bundle = h5.readFitsBundle(str(path))
+        data = bundle["data"]
+        # a data cube with a single frame is stored as a frame, next to a z-axis with a single grid point
+        if data.ndim == 2 and bundle["z"] is not None: data = data[np.newaxis, :, :]
+        return data.T << smunit(_unitString(bundle["dataUnit"]))
+
+    # read a regular file
     path = ut.absPath(path)
     data, header = fits.getdata(path, header=True)
     return data.T.astype(float) << smunit(header['BUNIT'])
@@ -37,19 +53,32 @@ def loadFits(path):
 
 ## This function retrieves the axis grid points from a FITS file produced by SKIRT, and returns the result as a
 # tuple of astropy quantity arrays: (x, y) for data frames or (x, y, z) for data cubes.
-# The function assumes that x and y represent spatial axes with a regular, linear grid. For a data cube, the
+# The function assumes that x and y represent spatial axes with a regular, linear grid, or that their grid points
+# are listed in table extensions, as for the spectral-time maps written by SKIRT. For a data cube, the
 # function expects the z-axis grid points (often wavelengths) to be listed in a binary table extension.
 #
-# The file path is interpreted as described for the pts.utils.absPath() function.
+# The file path is interpreted as described for the pts.utils.absPath() function. The path can also refer to a
+# FITS file bundle in an HDF5 file, which holds the grid points of each axis. The function then raises an error if
+# the bundle has no grid points for the x- or y-axis, as for a FITS file bundle meant as input for SKIRT.
 #
 def getFitsAxes(path):
+    # read a bundle
+    if ut.isBundlePath(path):
+        import pts.hdf5 as h5
+        bundle = h5.readFitsBundle(str(path), readData=False)
+        axes = ("x", "y", "z") if bundle["z"] is not None else ("x", "y")
+        for axis in axes:
+            if bundle[axis] is None:
+                raise ValueError("FITS file bundle has no grid points for the {}-axis: {}".format(axis, path))
+        return tuple(bundle[axis] << smunit(_unitString(bundle[axis + "Unit"])) for axis in axes)
+
     # open the file
     path = ut.absPath(path)
     with fits.open(path) as hdul:
         # build x and y grids
         h = hdul[0].header
-        x = _grid(h['NAXIS1'], h['CRPIX1'], h['CRVAL1'], h['CDELT1'], h['CUNIT1'])
-        y = _grid(h['NAXIS2'], h['CRPIX2'], h['CRVAL2'], h['CDELT2'], h['CUNIT2'])
+        x = _xyGrid(hdul, 1)
+        y = _xyGrid(hdul, 2)
         # if there are only two axes, we're done
         if int(h['NAXIS']) == 2:
             return x,y
@@ -58,6 +87,16 @@ def getFitsAxes(path):
         hdu = hdul["Z-axis coordinate values"]
         z = hdu.data["GRID_POINTS"].astype(float) << smunit(hdu.header["TUNIT1"])
         return x,y,z
+
+## This helper function returns the grid points of the x-axis (for n=1) or y-axis (for n=2) of the specified open
+# FITS file: a regular linear grid described by header cards or, if these cards are missing, the grid points listed
+# in a table extension, as for a spectral-time map written by SKIRT.
+def _xyGrid(hdul, n):
+    h = hdul[0].header
+    if 'CRPIX{}'.format(n) not in h:
+        hdu = hdul["{}-axis coordinate values".format("XY"[n-1])]
+        return hdu.data["GRID_POINTS"].astype(float) << smunit(h['CUNIT{}'.format(n)])
+    return _grid(*[ h[card + str(n)] for card in ('NAXIS', 'CRPIX', 'CRVAL', 'CDELT', 'CUNIT') ])
 
 ## This helper function constructs a regular linear grid based on the information for an axis in the FITS header
 def _grid(npix, crpix, crval, cdelt, cunit):
@@ -68,6 +107,10 @@ def _grid(npix, crpix, crval, cdelt, cunit):
     start = crval - cdelt * (crpix-1)
     stop = crval + cdelt * (npix-crpix)
     return np.linspace(start, stop, npix) << smunit(cunit)
+
+## This helper function returns the specified unit string of a bundle, or the empty string if it is None.
+def _unitString(unit):
+    return unit if unit is not None else ""
 
 # -----------------------------------------------------------------
 

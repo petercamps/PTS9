@@ -11,7 +11,8 @@
 # loaded from a SKIRT stored table (".stab") or a SKIRT output file (".dat") that includes a wavelength axis.
 #
 # Provide the name or (relative or absolute) file path of a SKIRT stored table file or a SKIRT output file
-# as the single required argument, and use optional arguments to further configure the plot:
+# as the single required argument; a SKIRT output file written as a bundle in an HDF5 file can be specified as
+# <tt>\<filepath\>:\<suite\>/\<bundle\></tt>. Use optional arguments to further configure the plot:
 #  - \em wmin (float): smallest wavelength on the horizontal axis; default is 0.1
 #  - \em wmax (float): largest wavelength on the horizontal axis; default is 1000
 #  - \em unit (string): unit of the wavelength limits (any spectral unit); default is micron

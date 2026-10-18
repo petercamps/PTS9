@@ -13,7 +13,9 @@
 #
 # The script takes the following arguments:
 #  - \em simDirPath (positional string argument): the path to the SKIRT simulation output directory,
-#                                                 or "." for the current directory.
+#                                                 or "." for the current directory; output bundles in an HDF5 file are
+#                                                 located through the log file, or by appending the HDF5 file and suite
+#                                                 to the path, as for the -o option of SKIRT.
 #  - \em prefix (string): the prefix of the simulation to handle; by default handles all simulations in the directory.
 #  - \em instruments (string): up to three comma-separated instrument names; by default handles the first three
 #                              instruments in the simulated configuration.

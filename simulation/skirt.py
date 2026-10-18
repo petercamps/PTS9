@@ -71,8 +71,8 @@ class Skirt:
     #   for the \c -i command line option of SKIRT.
     # - \em outDirPath: a string specifying the absolute or relative directory path for simulation output files,
     #   optionally followed by the name of an HDF5 file in that directory and the path of a suite in that file, as
-    #   for the \c -o command line option of SKIRT. The returned Simulation instance refers to the directory, in
-    #   which SKIRT always writes the log file.
+    #   for the \c -o command line option of SKIRT. The returned Simulation instance refers to this output path,
+    #   so that it lists the output bundles in the HDF5 file, if any, next to the regular output files.
     # - \em skiRelative: if \c True, the simulation input/output directory paths are relative to the directory of the
     #   \em ski file being executed; if \c False or missing, they are relative to the current directory.
     #
@@ -162,7 +162,7 @@ class Skirt:
             self._process = subprocess.Popen(arguments, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         return Simulation(skiFilePath=skiFilePath, inDirPath=_directoryPath(inpath),
-                          outDirPath=_directoryPath(outpath), process=self._process)
+                          outDirPath=outpath, process=self._process)
 
     ## This function returns True if the simulation started with the most recent call to the execute() function
     # is still running, and False otherwise.
@@ -178,7 +178,7 @@ class Skirt:
 # -----------------------------------------------------------------
 
 ## This helper function returns the directory part of the specified absolute path, given as the value of the \c -i
-# or \c -o command line option of SKIRT: the path itself if it is an existing directory or if it does not name an
+# command line option of SKIRT: the path itself if it is an existing directory or if it does not name an
 # HDF5 file, and otherwise the directory that holds the HDF5 file. As in SKIRT, the path names an HDF5 file if it
 # includes the \c .hdf5 filename extension followed by a colon, or if it ends with that extension.
 def _directoryPath(path):

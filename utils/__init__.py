@@ -17,5 +17,6 @@
 
 from .config import setInteractive, interactive
 from .error import UserError
-from .path import dataPath, ptsPath, ptsResourcesPath, projectParentPath, skirtPath, skirtResourcesPath, absPath, savePath
+from .path import dataPath, ptsPath, ptsResourcesPath, projectParentPath, skirtPath, skirtResourcesPath, \
+                  absPath, savePath, BundlePath, isBundlePath
 from .envir import timestamp, username, hostname

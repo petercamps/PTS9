@@ -773,21 +773,26 @@ def readStoredTableBundle(bundlePath):
 # A FITS file bundle for input holds just the \c data dataset. For such a bundle, all items other than \em data
 # are None or an empty dictionary.
 #
+# If the optional \em readData argument is False, the function does not read the values of the \c data dataset,
+# and the \em data item is None. This allows obtaining the axes and attributes of a large data cube without reading
+# the data cube itself.
+#
 # The function raises a user error if the bundle path does not refer to a bundle, if the bundle has no dataset
 # \c data with two or three dimensions, or if the number of grid points of an axis does not match the data.
-def readFitsBundle(bundlePath):
+def readFitsBundle(bundlePath, *, readData=True):
     with _existingBundle(bundlePath) as bundle:
         # read the data
         dataset = _dataset(bundle, "data")
-        data = _floatData(dataset)
-        if data.ndim != 2 and data.ndim != 3:
+        if dataset.ndim != 2 and dataset.ndim != 3:
             raise ut.UserError("The {} has {} dimension(s) rather than two or three" \
-                               .format(_where(dataset), data.ndim))
+                               .format(_where(dataset), dataset.ndim))
+        data = _floatData(dataset) if readData else None
         result = dict(data=data, dataUnit=_stringAttribute(dataset, "unit"))
         quantities = dict(data=_stringAttribute(dataset, "quantity"))
 
         # read the axes
-        sizes = dict(x=data.shape[-1], y=data.shape[-2], z=data.shape[0] if data.ndim == 3 else 1)
+        shape = dataset.shape
+        sizes = dict(x=shape[-1], y=shape[-2], z=shape[0] if len(shape) == 3 else 1)
         for name, size in sizes.items():
             grid = unit = None
             if bundle.get(name, getclass=True) is h5py.Dataset:

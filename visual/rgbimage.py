@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pathlib
 import PIL.Image
+import pts.simulation as sm
 import pts.utils as ut
 
 # -----------------------------------------------------------------
@@ -87,6 +88,8 @@ class RGBImage:
     #    You can override this default behavior by explicitly specifying the frames to be loaded in the RGB
     #    channels with the \em frameIndices argument. Provide a 3-tuple (R,G,B) containing the zero-based frame indices
     #    for respectively the red, green and blue channels; for example: <tt>frameIndices=(34,12,0)</tt>.
+    #  - A pts.utils.BundlePath instance, or a string with a bundle path, referring to a FITS file bundle in an HDF5
+    #    file, with a bundle name ending in .fits (case insensitive); the frames are loaded as for a FITS file.
     #  - A matplotlib Figure instance generated using an AGG back-end (use plt.get_backend() to verify).
     #  - A three-dimensional numpy array with shape (nx, ny, 3), using any numeric value type.
     #    The first two indices of the array respectively correspond to the x and y axes, so that
@@ -112,18 +115,21 @@ class RGBImage:
             buffer, self._shape = source.canvas.print_to_buffer()
             self._setBuf(buffer)
 
-        # file path
-        elif isinstance(source, (str,pathlib.Path)):
-            path = ut.absPath(source)
+        # file path or bundle
+        elif isinstance(source, (str,pathlib.Path,ut.BundlePath)):
+            path = ut.BundlePath(source) if ut.isBundlePath(source) else ut.absPath(source)
 
             # standard image file
-            if path.suffix.lower() in (".jpg",".jpeg",".png",".tif",".tiff"):
+            if path.suffix.lower() in (".jpg",".jpeg",".png",".tif",".tiff") and not isinstance(path, ut.BundlePath):
                 self._setPil(PIL.Image.open(path))
                 self._shape = self._dpil.size
 
-            # FITS file
+            # FITS file or FITS file bundle
             elif path.suffix.lower() == ".fits":
-                data = fits.getdata(path).T  # returns an array with shape (nx, ny) or (nx, ny, nlambda)
+                if isinstance(path, ut.BundlePath):
+                    data = sm.loadFits(path).value  # returns an array with shape (nx, ny) or (nx, ny, nlambda)
+                else:
+                    data = fits.getdata(path).T  # returns an array with shape (nx, ny) or (nx, ny, nlambda)
                 if data.ndim == 2:
                     self._setArr(np.dstack((data, data, data)))
                 elif data.ndim == 3:

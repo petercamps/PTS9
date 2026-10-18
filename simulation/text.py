@@ -8,7 +8,12 @@
 ## \package pts.simulation.text Handling SKIRT text input/output files
 #
 # This module offers functions for reading information from SKIRT text output files (including column text files,
-# log file and convergence reports) and for writing SKIRT text input files (column text files).
+# log file, convergence reports, and spatial grid plot files) and for writing SKIRT text input files (column text
+# files).
+#
+# The functions that read an output file also accept the corresponding bundle in an HDF5 file, specified as a
+# pts.utils.BundlePath instance or as a string with a bundle path (see the pts.utils.isBundlePath() function).
+# They then return the same information as for the regular file. This requires the \c h5py package.
 #
 
 # -----------------------------------------------------------------
@@ -23,7 +28,10 @@ from .units import unit as smunit
 # SKIRT's ConvergenceInfoProbe class. The value is returned as an astropy quantity with appropriate units,
 # assuming that a valid unit string has been found in the text file.
 #
-# The file path is interpreted as described for the pts.utils.absPath() function.
+# The file path is interpreted as described for the pts.utils.absPath() function. The path can also refer to an
+# unstructured text file bundle in an HDF5 file, such as the bundle that holds the convergence report of a simulation
+# with HDF5 output.
+#
 # The text line containing the value is located by the \em trigger (a text string that must occur on a line
 # before the one containing the value) and the \em header (a text string that must occur on the line containing
 # the field). In fact, the trigger can consist of multiple subtriggers, separated by forward slashes, that
@@ -44,60 +52,45 @@ from .units import unit as smunit
 #     getQuantityFromFile("xxx_log.txt", "ParticleMedium", "Total metallic mass")
 #
 def getQuantityFromFile(path, trigger, header):
-    path = ut.absPath(path)
-
     triggers = trigger.split("/")
     triggered = 0
-    with open(path) as infile:
-        for line in infile:
-            # select the line
-            if triggered < len(triggers) and triggers[triggered] in line: triggered += 1
-            elif triggered==len(triggers) and header in line:
-                line = line.strip()
-                # remove section between parentheses and/or trailing "."
-                if line.endswith(')') or line.endswith(').'):
-                    line = line[:line.rfind('(')]
-                if line.endswith('.'):
-                    line = line[:-1]
-                segments = line.split()
-                if len(segments) >= 2:
-                    try:
-                        return float(segments[-1]) << smunit("")
-                    except ValueError: pass
-                    return float(segments[-2]) << smunit(segments[-1])
+    for line in _textLines(path):
+        # select the line
+        if triggered < len(triggers) and triggers[triggered] in line: triggered += 1
+        elif triggered==len(triggers) and header in line:
+            line = line.strip()
+            # remove section between parentheses and/or trailing "."
+            if line.endswith(')') or line.endswith(').'):
+                line = line[:line.rfind('(')]
+            if line.endswith('.'):
+                line = line[:-1]
+            segments = line.split()
+            if len(segments) >= 2:
+                try:
+                    return float(segments[-1]) << smunit("")
+                except ValueError: pass
+                return float(segments[-2]) << smunit(segments[-1])
 
     raise ValueError("Quantity '{}' not found in text file".format(header))
+
+## This helper function returns an iterable over the lines of the specified text file, or of the text held by the
+# specified unstructured text file bundle.
+def _textLines(path):
+    if ut.isBundlePath(path):
+        import pts.hdf5 as h5
+        yield from h5.readTextBundle(str(path))["text"].splitlines()
+    else:
+        with open(ut.absPath(path)) as infile:
+            yield from infile
 
 # -----------------------------------------------------------------
 
 ## This function reads the header of a SKIRT column text file, and returns a list of the column descriptions,
 # in order of occurrence. If the specified file does not have a column header in SKIRT format, the function
 # returns an empty list. The file path is interpreted as described for the pts.utils.absPath() function.
+# The path can also refer to a text column file bundle in an HDF5 file.
 def getColumnDescriptions(path):
-    path = ut.absPath(path)
-
-    # parse the header
-    descriptions = []
-    with open(path) as infile:
-        for line in infile:
-            # skip empty lines
-            line = line.strip()
-            if len(line) > 0:
-                # handle end-of-header
-                if not line.startswith("#"): break;
-                # remove hash character and skip non-column header lines
-                line = line[1:].strip()
-                if line.lower().startswith("column") and ":" in line:
-                    # extract the description
-                    colon = line.find(":")
-                    if line.endswith(')'):
-                        left = line.rfind("(")
-                        description = line[colon+1:left].strip()
-                    else:
-                        description = line[colon+1:].strip()
-                    # add the description to the list
-                    descriptions.append(description)
-    return descriptions
+    return [ description for description, unit in _columnHeader(path) ]
 
 ## This function loads data from a SKIRT column text file, using the metadata in the file's header to assign
 # appropriate units to each column, and optionally, to locate columns by name.
@@ -106,7 +99,8 @@ def getColumnDescriptions(path):
 # is used to determine the appropriate units for each column. If the file does not have a conforming column header,
 # use the numpy.loadtxt() function directly.
 #
-# The file path is interpreted as described for the pts.utils.absPath() function.
+# The file path is interpreted as described for the pts.utils.absPath() function. The path can also refer to a text
+# column file bundle in an HDF5 file, which holds the same metadata.
 #
 # The columns to be loaded can be specified in one of the following ways:
 #  - A sequence (list or tuple) of integers specifying zero-based column indices.
@@ -120,31 +114,11 @@ def getColumnDescriptions(path):
 # all arrays have the same length.
 #
 def loadColumns(path, columns=None):
-    path = ut.absPath(path)
-
-    # parse the header
-    header = []
-    with open(path) as infile:
-        for line in infile:
-            # skip empty lines
-            line = line.strip()
-            if len(line) > 0:
-                # handle end-of-header
-                if not line.startswith("#"): break;
-                # remove hash character and skip non-column header lines
-                line = line[1:].strip()
-                if line.lower().startswith("column") and ":" in line:
-                    # extract the description and the unit
-                    colon = line.find(":")
-                    if line.endswith(')'):
-                        left = line.rfind("(")
-                        description = line[colon+1:left].strip()
-                        unit = line[left+1:-1].strip()
-                    else:
-                        description = line[colon+1:].strip()
-                        unit = ""
-                    # add the column metadata to the internal list
-                    header.append( (description, unit) )
+    # get the column metadata and, for a bundle, the column data
+    if ut.isBundlePath(path):
+        header, bundleColumns = _readBundleColumns(path)
+    else:
+        header = _columnHeader(path)
 
     # construct a list of zero-based indices for columns to be loaded
     if columns is None:
@@ -173,8 +147,57 @@ def loadColumns(path, columns=None):
             usecols.append(col)
 
     # load the data and assign units
-    data = np.loadtxt(path, usecols=usecols, ndmin=2, unpack=True)
+    if ut.isBundlePath(path):
+        data = [ bundleColumns[colindex] for colindex in usecols ]
+    else:
+        data = np.loadtxt(ut.absPath(path), usecols=usecols, ndmin=2, unpack=True)
     return [coldata << smunit(header[colindex][1]) for colindex, coldata in zip(usecols, data)]
+
+## This helper function returns a list with a tuple (description, unit) for each column of the specified text column
+# file or text column file bundle, in order of occurrence. The unit is the empty string for a column without a unit.
+def _columnHeader(path):
+    # get the column metadata from a bundle
+    if ut.isBundlePath(path):
+        return _readBundleColumns(path)[0]
+
+    # parse the header of a regular file
+    header = []
+    with open(ut.absPath(path)) as infile:
+        for line in infile:
+            # skip empty lines
+            line = line.strip()
+            if len(line) > 0:
+                # handle end-of-header
+                if not line.startswith("#"): break;
+                # remove hash character and skip non-column header lines
+                line = line[1:].strip()
+                if line.lower().startswith("column") and ":" in line:
+                    # extract the description and the unit
+                    colon = line.find(":")
+                    if line.endswith(')'):
+                        left = line.rfind("(")
+                        description = line[colon+1:left].strip()
+                        unit = line[left+1:-1].strip()
+                    else:
+                        description = line[colon+1:].strip()
+                        unit = ""
+                    # add the column metadata to the internal list
+                    header.append( (description, unit) )
+    return header
+
+## This helper function reads the specified text column file bundle, and returns a tuple with a list of the column
+# metadata, as described for the _columnHeader() function, and a list with an array of values for each column.
+# For a bundle of another type, such as an unstructured text file bundle, it returns two empty lists, just as a
+# regular text file without column information lines has no columns.
+def _readBundleColumns(path):
+    import pts.hdf5 as h5
+    try:
+        table = h5.readColumnBundle(str(path))
+    except ut.UserError:
+        if h5.inferBundleType(str(path)) not in ("columns", "amr"): return [], []
+        raise
+    header = [ (name, unit if unit is not None else "") for name, unit in zip(table["names"], table["units"]) ]
+    return header, table["columns"]
 
 
 ## This helper function returns true is the specified value can be converted to an integer, and False otherwise.
@@ -200,6 +223,49 @@ def _indexForDescriptionInHeader(spec, header):
     if count > 1:
         raise ValueError("Column specification matches multiple header descriptions: {}".format(spec))
     return result
+
+# -----------------------------------------------------------------
+
+## This function loads the polylines from a spatial grid plot file produced by SKIRT, i.e. a file generated by
+# a probe of the spatial grid with the data to plot the grid, and returns a tuple (points, moveto) with the
+# following items:
+#  - \em points: a two-dimensional numpy array with shape (numPoints, 2) or (numPoints, 3), listing the coordinates
+#    of the consecutive points of all polylines, in the output length unit of the simulation. The plot file holds
+#    two coordinates for each point if it represents the intersection of the grid with a coordinate plane, and three
+#    coordinates if it describes the grid in three dimensions.
+#  - \em moveto: a one-dimensional numpy array of Booleans with an item for each point: True for the first point
+#    of a polyline, and False for a point that is connected to the preceding point.
+#
+# The file path is interpreted as described for the pts.utils.absPath() function. The path can also refer to a
+# spatial grid plot file bundle in an HDF5 file. A regular plot file has a line with the coordinates of each point,
+# separated by white space, and an empty line after each polyline. For an empty plot file, the function returns an
+# array of points with shape (0, 0), or for a bundle, the shape of its empty dataset.
+#
+def loadGridPlot(path):
+    # read a bundle
+    if ut.isBundlePath(path):
+        import pts.hdf5 as h5
+        plot = h5.readGridPlotBundle(str(path))
+        return plot["points"], plot["moveto"]
+
+    # parse a regular file
+    points = []
+    moveto = []
+    newPolyline = True
+    with open(ut.absPath(path)) as infile:
+        for line in infile:
+            coords = line.split()
+            if len(coords) == 0:
+                newPolyline = True
+            else:
+                if len(points) > 0 and len(coords) != len(points[0]):
+                    raise ValueError("Spatial grid plot file has points with {} and {} coordinates: {}" \
+                                     .format(len(points[0]), len(coords), path))
+                points.append([ float(coord) for coord in coords ])
+                moveto.append(newPolyline)
+                newPolyline = False
+    if len(points) == 0: return np.zeros((0, 0)), np.zeros(0, dtype=bool)
+    return np.array(points), np.array(moveto)
 
 # -----------------------------------------------------------------
 

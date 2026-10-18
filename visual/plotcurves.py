@@ -205,7 +205,8 @@ def plotSources(simulation, minWavelength=None, maxWavelength=None, decades=None
 
 ## This function creates a plot of the spectral resolution \f$R=\lambda/\Delta\lambda\f$ of a wavelength grid
 # loaded from a SKIRT stored table (".stab"), a SKIRT text column file (".dat") that includes a wavelength axis,
-# or a SKIRT instrument or probe data cube that includes a wavelength axis.
+# or a SKIRT instrument or probe data cube that includes a wavelength axis. A text column file or a data cube can
+# also be specified as a bundle in an HDF5 file (see the pts.utils.isBundlePath() function).
 #
 # By default, the figure is saved in the current directory, using the name of the input file but
 # with the ".pdf" filename extension. This can be overridden with the out* arguments as described for the
@@ -216,7 +217,7 @@ def plotSpectralResolution(inFilePath, minWavelength=None, maxWavelength=None, d
                 outDirPath=None, outFileName=None, outFilePath=None, figSize=(8, 5), interactive=None):
 
     # load the wavelength grid
-    inFilePath = ut.absPath(inFilePath)
+    inFilePath = ut.BundlePath(inFilePath) if ut.isBundlePath(inFilePath) else ut.absPath(inFilePath)
     if inFilePath.suffix.lower() == ".stab":
         table = stab.readStoredTable(inFilePath)
         if "lambda" not in table:

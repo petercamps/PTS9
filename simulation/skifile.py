@@ -116,6 +116,13 @@ class SkiFile:
             values.append(value)
         return values
 
+    ## This function returns a list of the elements selected by the specified XPath expression relative to the
+    # document root, as lxml element objects that remain part of the XML tree of the ski file. This allows the caller
+    # to inspect the selected elements, their attributes, and their children. If no elements are found, the function
+    # returns an empty list.
+    def getElements(self, xpath):
+        return [ elem for elem in self._tree.xpath(xpath) if etree.iselement(elem) ]
+
     ## This function sets an attribute value from a string. The first argument is an XPath expression relative to
     # the document root that selects exactly one element. The second argument is the attribute name. The third
     # argument is the string value. If the element did not have an attribute with the specified name, it is added.

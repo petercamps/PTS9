@@ -8,8 +8,8 @@
 ## \package pts.simulation.text Handling SKIRT text input/output files
 #
 # This module offers functions for reading information from SKIRT text output files (including column text files,
-# log file, convergence reports, and spatial grid plot files) and for writing SKIRT text input files (column text
-# files).
+# log file, convergence reports, and spatial grid plot files), for writing SKIRT text input files (column text
+# files), and for converting SKIRT 9 import files for dust media to SKIRT 10.
 #
 # The functions that read an output file also accept the corresponding bundle in an HDF5 file, specified as a
 # pts.utils.BundlePath instance or as a string with a bundle path (see the pts.utils.isBundlePath() function).
@@ -18,6 +18,7 @@
 
 # -----------------------------------------------------------------
 
+import logging
 import numpy as np
 import pts.utils as ut
 from .units import unit as smunit
@@ -310,5 +311,145 @@ def saveColumns(path, quantities, units, descriptions, *, title=None, fmt="%1.9e
 
         # write the data
         np.savetxt(outfile, np.stack(quantities).T, fmt=fmt)
+
+# -----------------------------------------------------------------
+## This function converts an import file for a dust medium or an imported geometry from SKIRT 9 to SKIRT 10. In
+# SKIRT 9, such a medium or geometry could import a metallicity and a temperature. The imported mass or density was
+# then multiplied by the metallicity, and set to zero for the entities with a temperature above a given maximum
+# temperature. SKIRT 10 no longer offers these options, so that the import file must provide the effective mass or
+# density, without metallicity and temperature columns.
+#
+# The function expects the following arguments:
+#  - \em inpath: the file path of the SKIRT 9 import file, interpreted as described for the pts.utils.absPath()
+#    function; a column text file in an HDF5 file is not supported.
+#  - \em outpath: the file path of the converted import file; the file must not yet exist.
+#  - \em massColumns: a sequence with the one-based indices of the columns holding the mass or density, usually
+#    a single column.
+#  - \em metallicityColumn: the one-based index of the metallicity column, or zero if there is none.
+#  - \em temperatureColumn: the one-based index of the temperature column, or zero if there is none.
+#  - \em maxTemperature: the maximum temperature in K, or zero if there is no temperature cutoff.
+#
+# The function multiplies the values in the mass and density columns by the metallicity, and sets them to zero for
+# the entities with a temperature above the maximum temperature, if there is one. It then removes the metallicity
+# and temperature columns, and adjusts the column information lines in the header accordingly. SKIRT ignores
+# smoothed particles with zero mass, so that the result is the same as removing these particles. A value that is
+# not changed retains its original text, and a changed value is written with the shortest representation that
+# reproduces the double-precision result. All other lines are copied unchanged, including comment lines and the
+# lines of an adaptive mesh file that start with an exclamation mark. A comment line describing the conversion is
+# added after the column information lines, or at the end of the header if there are none.
+#
+# Like SKIRT 9, the function compares the temperature with the maximum temperature in K. If the column information
+# lines specify a unit for the temperature column, this unit must therefore be K.
+#
+def convertDustImportFile(inpath, outpath, massColumns, metallicityColumn=0, temperatureColumn=0, maxTemperature=0.):
+    import re
+
+    # verify the arguments
+    inpath = ut.absPath(inpath)
+    outpath = ut.absPath(outpath)
+    if not inpath.is_file():
+        raise ut.UserError("Import file does not exist: {}".format(inpath))
+    if outpath.exists():
+        raise ut.UserError("Converted file already exists: {}".format(outpath))
+    massColumns = sorted(set(massColumns))
+    if len(massColumns) == 0 or min(massColumns) < 1:
+        raise ut.UserError("Mass or density column indices must be positive")
+    if metallicityColumn < 0 or temperatureColumn < 0:
+        raise ut.UserError("Metallicity and temperature column indices must be positive or zero")
+    if metallicityColumn == 0 and temperatureColumn == 0:
+        raise ut.UserError("There is nothing to convert without metallicity or temperature column")
+    if maxTemperature < 0 or (maxTemperature > 0 and temperatureColumn == 0):
+        raise ut.UserError("A maximum temperature requires a temperature column")
+    removedColumns = [ column for column in (metallicityColumn, temperatureColumn) if column > 0 ]
+    if len(set(removedColumns)) != len(removedColumns) or set(removedColumns) & set(massColumns):
+        raise ut.UserError("Mass or density, metallicity, and temperature columns must differ")
+    numColumns = max(massColumns + removedColumns)
+
+    # read the input file, retaining line endings
+    with open(inpath, newline="") as infile:
+        lines = infile.readlines()
+
+    # process the header: remove the information lines for the removed columns and renumber the others
+    syntax = re.compile(r"#\s*column\s*(\d*)\s*:\s*([^()]*)\(\s*([a-zA-Z0-9/]*)\s*\)\s*", re.IGNORECASE)
+    outlines = []
+    insertIndex = 0  # index in outlines after the last column information line
+    index = 0
+    column = 0  # one-based index of the column described by the current information line
+    for index, line in enumerate(lines):
+        if line.strip() and not line.lstrip().startswith("#"): break
+        match = syntax.fullmatch(line.rstrip("\r\n"))
+        if match:
+            column += 1
+            insertIndex = len(outlines)
+            if column == temperatureColumn and match.group(3) not in ("", "K"):
+                raise ut.UserError("Temperature column has unit '{}' rather than K".format(match.group(3)))
+            if column in removedColumns:
+                continue
+            if match.group(1):
+                newColumn = column - sum(1 for removed in removedColumns if removed < column)
+                line = line[:match.start(1)] + str(newColumn) + line[match.end(1):]
+            insertIndex = len(outlines) + 1
+        outlines.append(line)
+    else:
+        index = len(lines)
+    if column == 0: insertIndex = len(outlines)
+
+    # add a comment line describing the conversion
+    description = "# Converted from SKIRT 9 by PTS:"
+    if metallicityColumn:
+        description += " values in column(s) {} multiplied by the metallicity in column {};".format(
+                        ", ".join(str(column) for column in massColumns), metallicityColumn)
+    if maxTemperature > 0:
+        description += " values in column(s) {} set to zero for a temperature in column {} above {:g} K;".format(
+                        ", ".join(str(column) for column in massColumns), temperatureColumn, maxTemperature)
+    description += " column(s) {} removed".format(", ".join(str(column) for column in sorted(removedColumns)))
+    ending = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
+    outlines.insert(insertIndex, description + ending)
+
+    # process the data lines
+    numHot = 0
+    for lineIndex in range(index, len(lines)):
+        line = lines[lineIndex]
+        if not line.strip() or line.lstrip().startswith("#") or line.lstrip().startswith("!"):
+            outlines.append(line)
+            continue
+
+        # split the line in (separator, value) pairs, retaining the trailing whitespace including the line ending
+        body = line.rstrip()
+        trailing = line[len(body):]
+        parts = re.split(r"(\s+)", body)
+        if parts[0] == "": parts = parts[1:]
+        else: parts = [""] + parts
+        pairs = [ [parts[i], parts[i+1]] for i in range(0, len(parts), 2) ]
+        if len(pairs) < numColumns:
+            raise ut.UserError("Line {} has {} columns rather than at least {}".format(lineIndex+1, len(pairs),
+                                                                                        numColumns))
+
+        # adjust the mass or density values
+        try:
+            metallicity = float(pairs[metallicityColumn-1][1]) if metallicityColumn else 1.
+            temperature = float(pairs[temperatureColumn-1][1]) if temperatureColumn else 0.
+            hot = maxTemperature > 0 and temperature > maxTemperature
+            numHot += hot
+            for column in massColumns:
+                if hot:
+                    pairs[column-1][1] = "0"
+                elif metallicityColumn:
+                    pairs[column-1][1] = repr(float(pairs[column-1][1]) * metallicity)
+        except ValueError:
+            raise ut.UserError("Line {} has a value that is not a number".format(lineIndex+1))
+
+        # remove the metallicity and temperature values, keeping the leading whitespace of the line
+        leading = pairs[0][0]
+        pairs = [ pair for column, pair in enumerate(pairs, start=1) if column not in removedColumns ]
+        pairs[0][0] = leading
+        outlines.append("".join(separator + value for separator, value in pairs) + trailing)
+
+    # write the output file
+    with open(outpath, "w", newline="") as outfile:
+        outfile.writelines(outlines)
+    logging.info("Converted {} into {}".format(inpath, outpath))
+    if maxTemperature > 0:
+        logging.info("Set the mass or density to zero for {} entities above {:g} K".format(numHot, maxTemperature))
 
 # -----------------------------------------------------------------

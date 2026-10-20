@@ -51,6 +51,9 @@ def upgradeSkiFile(inpath, *, backup=True, replace=True):
         logging.error("Ski file is older than version 9: {}".format(inpath))
         return
 
+    # report the changes that cannot be performed automatically
+    _reportManualChanges(ski, inpath)
+
     # perform the upgrade in the XML tree in memory, keeping track of whether the contents has actually changed
     changed = False
     for condition,templates in _getUpgradeDefinitions():
@@ -262,7 +265,114 @@ def _getUpgradeDefinitions():
         # policies, and FileTreeSpatialGrid by an octtree grid with a topology policy
         _replacePolicyTreeGrid(),
         _replaceFileTreeGrid(),
+
+        # SKIRT 10 update (oct 2026): a material mix or family requests all its imported quantities, including the
+        # temperature and the metallicity; remove the corresponding options from imported media and geometries,
+        # and replace the material mix family property of imported media by a material mix property that holds a
+        # material mix or a material mix family
+        *[ _removeScalarProperty(typeName, propName) for typeName in _importedMediumTypes + _importedGeometryTypes
+                                                     for propName in ("importMetallicity", "importTemperature",
+                                                                      "maxTemperature") ],
+        *[ _replaceMaterialMixFamily(typeName) for typeName in _importedMediumTypes ],
+        *[ _removeScalarProperty(typeName, "importVariableMixParams") for typeName in _importedMediumTypes ],
+        *[ _changeCompoundPropertyBaseType(typeName, "materialMix", "MaterialMix", "MaterialMixProvider")
+                                                     for typeName in _importedMediumTypes ],
+
+        # SKIRT 10 update (oct 2026): the custom state probe selects variables by name or index
+        _changeScalarPropertyName("CustomStateProbe", "indices", "variables"),
     ]
+
+# --------- handling the uniform import of the medium state
+
+# the concrete imported medium and imported geometry types
+_importedMediumTypes = [ "ParticleMedium", "CellMedium", "VoronoiMeshMedium", "AdaptiveMeshMedium",
+                         "SphericalCellMedium", "CylindricalCellMedium" ]
+_importedGeometryTypes = [ name.replace("Medium", "Geometry") for name in _importedMediumTypes ]
+
+# the material mixes that import the metallicity and/or the temperature since SKIRT 10, with a function that returns
+# whether the mix described by the specified element imports the metallicity and the temperature, in that order
+_mixesImportingTemperature = { "ElectronMix": lambda e: (False, _isTrue(e.get("includeThermalDispersion"))),
+                               "LyaNeutralHydrogenGasMix": lambda e: (False, True),
+                               "SpinFlipAbsorptionMix": lambda e: (False, True),
+                               "SpinFlipHydrogenGasMix": lambda e: (True, True),
+                               "NonLTELineGasMix": lambda e: (False, True),
+                               "DiffuseIonizedGasMix": lambda e: (True, True),
+                               "XRayIonicGasMixFamily": lambda e: (False, True) }
+
+# return true if the specified attribute value represents true
+def _isTrue(value):
+    return value is not None and value.strip().lower() in ("true", "t", "yes", "y", "1")
+
+## For an imported medium with the importVariableMixParams option enabled, replace the materialMixFamily property
+# by a materialMix property of type MaterialMixProvider holding the same family, and remove any materialMix
+# property; for other imported media, remove any materialMixFamily property.
+def _replaceMaterialMixFamily(typeName):
+    enabled = "@importVariableMixParams='true' or @importVariableMixParams='True' or @importVariableMixParams='1'"
+    return ('''//{0}/materialMixFamily'''.format(typeName),
+            '''
+            <xsl:template match="//{0}[{1}]/materialMixFamily">
+                <xsl:element name="materialMix">
+                    <xsl:attribute name="type">
+                        <xsl:value-of select="'MaterialMixProvider'"/>
+                    </xsl:attribute>
+                    <xsl:apply-templates select="node()"/>
+                </xsl:element>
+            </xsl:template>
+            <xsl:template match="//{0}[{1}]/materialMix">
+            </xsl:template>
+            <xsl:template match="//{0}[not({1})]/materialMixFamily">
+            </xsl:template>
+            '''.format(typeName, enabled))
+
+## Log a warning for each change to the imported media and geometries, and to the custom state probes, of the
+# specified ski file that the upgrade cannot perform automatically: for each import file whose columns change, and
+# for each custom state probe that selects variables by index. The function inspects only the imported media and
+# geometries that still have the options removed by the upgrade.
+def _reportManualChanges(ski, inpath):
+    location = "{}/{}".format(inpath.parent.name, inpath.name)
+    columnNames = dict(Z="metallicity", T="temperature", v="velocity", B="magnetic field")
+    def listColumns(columns):
+        return ", ".join(columnNames[column] for column in columns) if columns else "none"
+
+    # imported media and geometries
+    for elem in ski.getElements(" | ".join("//" + name for name in _importedMediumTypes + _importedGeometryTypes)):
+        if elem.get("importMetallicity") is None and elem.get("importTemperature") is None: continue
+        mixes = elem.xpath("materialMix/*|materialMixFamily/*")
+        mix = mixes[0].tag if mixes else ""
+        requestsZ, requestsT = _mixesImportingTemperature[mix](mixes[0]) if mix in _mixesImportingTemperature \
+                               else (False, False)
+
+        # compare the columns following the mass or density column(s), except for the remaining mix parameters
+        importsZ = _isTrue(elem.get("importMetallicity"))
+        importsT = _isTrue(elem.get("importTemperature"))
+        vB = [ column for column, option in (("v", "importVelocity"), ("B", "importMagneticField"))
+                      if _isTrue(elem.get(option)) ]
+        oldColumns = (["Z"] if importsZ else []) + (["T"] if importsT else []) + vB
+        newColumns = vB + (["Z"] if requestsZ else []) + (["T"] if requestsT else [])
+        if oldColumns == newColumns: continue
+
+        # report the change
+        message = "The columns after the mass or density in the import file '{}' of the {} in {} change from " \
+                  "({}) to ({}), followed by any other material mix parameters; ".format(elem.get("filename", ""),
+                  elem.tag, location, listColumns(oldColumns), listColumns(newColumns))
+        maxT = elem.get("maxTemperature", "0").split()
+        effects = (["multiplied by the imported metallicity"] if importsZ else []) + \
+                  (["limited by the maximum temperature of {}".format(" ".join(maxT))]
+                   if importsT and float(maxT[0]) > 0 else [])
+        if effects and not (requestsZ or requestsT):
+            message += "for dust, the mass is no longer {}; ".format(" or ".join(effects))
+            message += "adjust the import file with the convert_dust_import_file command"
+        else:
+            message += "adjust the import file or the useColumns option"
+        logging.warning(message)
+
+    # custom state probes
+    for elem in ski.getElements("//CustomStateProbe[@indices]"):
+        if elem.get("indices").strip():
+            logging.warning("The indices of the custom state variables shift for the material mixes that store a "
+                            "temperature or a metallicity; verify the indices '{}' of the CustomStateProbe '{}' in {}, "
+                            "or select the variables by name".format(elem.get("indices"), elem.get("probeName", ""),
+                                                                     location))
 
 # --------- handling probe to form-probe updates
 

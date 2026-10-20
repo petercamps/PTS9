@@ -20,7 +20,8 @@ from .simulation import createSimulation, createSimulations, instrumentOutFilePa
                         Simulation, Instrument, Probe
 from .skifile import SkiFile
 from .skirt import Skirt
-from .text import getQuantityFromFile, getColumnDescriptions, loadColumns, loadGridPlot, saveColumns
+from .text import getQuantityFromFile, getColumnDescriptions, loadColumns, loadGridPlot, saveColumns, \
+                  convertDustImportFile
 from .units import unit, convertToFlavor, \
                    latexForUnit, latexForWavelength, latexForWavelengthWithUnit, hasReverseWavelengthOrder, \
                    latexForSpectralFlux, latexForSpectralRadiance, latexForSpectralLuminosity, \

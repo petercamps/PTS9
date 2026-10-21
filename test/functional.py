@@ -313,7 +313,9 @@ class SkirtTestSuite:
 # first converts the bundles at that location to regular files in the output directory, and compares the converted
 # files according to the type of their bundle, as described for the findDifferences() function. A file that the test
 # case wrote both as a regular file and as a bundle, or a bundle that cannot be converted, causes the test case to
-# fail.
+# fail, except for a column text file of which the bundle holds the same information as the regular file: SKIRT
+# writes some column text files, such as the iteration history, incrementally as regular files and also stores them
+# as bundles at the end of the run, leaving the regular file in place.
 def reportTestCase(sim, hdf5Location=None):
     duplicates = []
     unconverted = []
@@ -479,9 +481,12 @@ def getDifferenceStatistics(sim, name, bundleType=None):
 # converted; and a dictionary that maps the name of each converted file to the type of its bundle, as returned by the
 # pts.hdf5.inferBundleType() function. Bundles with a type that is not recognized are ignored, and so are the bundles
 # for the log file and the parameter file (with a name ending in \c _log.txt or \c _parameters.xml), because SKIRT
-# keeps these files as regular files in the output directory next to their bundles. The function does nothing if the
-# HDF5 file does not exist, because a test case that writes no bundles does not create it. The informational messages
-# logged by the conversion functions are suppressed.
+# keeps these files as regular files in the output directory next to their bundles. Similarly, a column text file
+# bundle for which the test case also wrote a regular file is not counted as a duplicate if it holds the same
+# information as that file (see the _areEqualColumnFiles() function), because SKIRT keeps the regular file in place
+# for the column text files that it writes incrementally and stores as a bundle at the end. The function does nothing
+# if the HDF5 file does not exist, because a test case that writes no bundles does not create it. The informational
+# messages logged by the conversion functions are suppressed.
 def _convertOutputBundles(location, outdir):
     import pts.hdf5 as hdf
 
@@ -499,7 +504,8 @@ def _convertOutputBundles(location, outdir):
                     bundleType = hdf.inferBundleType(bundlePath)
                     if bundleType is not None:
                         if (outdir / name).exists():
-                            duplicates.append(name)
+                            if not (bundleType == "columns" and _isCopyOfColumnFile(bundlePath, outdir / name)):
+                                duplicates.append(name)
                         else:
                             hdf.convertBundle(bundlePath, outdir)
                             converted[name] = bundleType
@@ -510,6 +516,16 @@ def _convertOutputBundles(location, outdir):
         finally:
             logging.disable(logging.NOTSET)
     return duplicates, unconverted, converted
+
+## This helper function returns True if the specified column text file bundle holds the same information as the
+# specified regular column text file, as described for the _areEqualColumnFiles() function, and False otherwise. It
+# converts the bundle to a regular file in a temporary directory for the comparison.
+def _isCopyOfColumnFile(bundlePath, filePath):
+    import tempfile
+    import pts.hdf5 as hdf
+    with tempfile.TemporaryDirectory() as tmpdir:
+        convertedPath = hdf.convertBundle(bundlePath, tmpdir, fileName=filePath.name)
+        return _areEqualColumnFiles(convertedPath, filePath)
 
 ## This helper function returns True if the specified column text files hold the same information when their numbers
 # are rounded to nine significant digits, the precision of the column text files written by SKIRT, and False

@@ -280,6 +280,10 @@ def _getUpgradeDefinitions():
 
         # SKIRT 10 update (oct 2026): the custom state probe selects variables by name or index
         _changeScalarPropertyName("CustomStateProbe", "indices", "variables"),
+
+        # SKIRT 10 update (oct 2026): replace the dust emission convergence criterion relative to the previous
+        # iteration by new criteria, which receive their default values
+        _removeScalarProperty("DustEmissionOptions", "maxFractionOfPrevious"),
     ]
 
 # --------- handling the uniform import of the medium state

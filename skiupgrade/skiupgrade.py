@@ -284,7 +284,16 @@ def _getUpgradeDefinitions():
         # SKIRT 10 update (oct 2026): replace the dust emission convergence criterion relative to the previous
         # iteration by new criteria, which receive their default values
         _removeScalarProperty("DustEmissionOptions", "maxFractionOfPrevious"),
+
+        # SKIRT 10 update (nov 2026): the dynamic medium state recipes allow a fraction of the number of cells to not
+        # converge instead of a number of cells; a zero number converts exactly, while a nonzero number is left in
+        # place, so that SKIRT rejects the ski file until it has been replaced by hand (see _reportManualChanges)
+        *[ _changeZeroScalarPropertyName(typeName, "maxNotConvergedCells", "maxFractionNotConvergedCells")
+                                                     for typeName in _dynamicStateRecipeTypes ],
     ]
+
+# the concrete dynamic medium state recipe types
+_dynamicStateRecipeTypes = [ "ClearDensityRecipe", "LinearDustDestructionRecipe" ]
 
 # --------- handling the uniform import of the medium state
 
@@ -328,9 +337,10 @@ def _replaceMaterialMixFamily(typeName):
             </xsl:template>
             '''.format(typeName, enabled))
 
-## Log a warning for each change to the imported media and geometries, and to the custom state probes, of the
-# specified ski file that the upgrade cannot perform automatically: for each import file whose columns change, and
-# for each custom state probe that selects variables by index. The function inspects only the imported media and
+## Log a warning for each change to the imported media and geometries, to the custom state probes, and to the
+# dynamic medium state recipes of the specified ski file that the upgrade cannot perform automatically: for each
+# import file whose columns change, for each custom state probe that selects variables by index, and for each recipe
+# that allows a nonzero number of cells to not converge. The function inspects only the imported media and
 # geometries that still have the options removed by the upgrade.
 def _reportManualChanges(ski, inpath):
     location = "{}/{}".format(inpath.parent.name, inpath.name)
@@ -377,6 +387,18 @@ def _reportManualChanges(ski, inpath):
                             "temperature or a metallicity; verify the indices '{}' of the CustomStateProbe '{}' in {}, "
                             "or select the variables by name".format(elem.get("indices"), elem.get("probeName", ""),
                                                                      location))
+
+    # dynamic medium state recipes that allow a nonzero number of cells to not converge
+    for elem in ski.getElements(" | ".join("//" + name for name in _dynamicStateRecipeTypes)):
+        count = elem.get("maxNotConvergedCells")
+        if count is None: continue
+        try:
+            if float(count) == 0: continue
+        except ValueError:
+            pass
+        logging.warning("The {} in {} allows {} cells to not converge; replace its maxNotConvergedCells property by "
+                        "maxFractionNotConvergedCells, the fraction of the number of cells in the spatial grid that "
+                        "is allowed to not converge".format(elem.tag, location, count.strip()))
 
 # --------- handling probe to form-probe updates
 
@@ -806,6 +828,17 @@ def _changeScalarPropertyName(typeName, oldPropName, newPropName):
     return ('''//{0}/@{1}'''.format(typeName, oldPropName),
             '''
             <xsl:template match="//{0}/@{1}">
+                <xsl:attribute name="{2}">
+                    <xsl:value-of select="."/>
+                </xsl:attribute>
+            </xsl:template>
+            '''.format(typeName, oldPropName, newPropName))
+
+## Change the name of a scalar property for a given type, if the property has a numerical value of zero.
+def _changeZeroScalarPropertyName(typeName, oldPropName, newPropName):
+    return ('''//{0}[number(@{1})=0]/@{1}'''.format(typeName, oldPropName),
+            '''
+            <xsl:template match="//{0}[number(@{1})=0]/@{1}">
                 <xsl:attribute name="{2}">
                     <xsl:value-of select="."/>
                 </xsl:attribute>

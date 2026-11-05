@@ -19,6 +19,9 @@ import pts.utils as ut
 import pts.simulation as sm
 import pts.storedtable as stab
 
+# NumPy 2.0 renamed numpy.trapz() to numpy.trapezoid(), and later versions no longer offer the old name
+_trapezoid = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+
 # -----------------------------------------------------------------
 
 ## An instance of the BroadBand class represents a broadband filter with a given transmission curve.
@@ -151,7 +154,7 @@ class BroadBand:
     # and attaches the appropriate astropy units (micron and 1/micron, respectively).
     def _normalize(self):
         # normalize the transmission curve to unity
-        self._transmissions /= np.trapz(x=self._wavelengths, y=self._transmissions)
+        self._transmissions /= _trapezoid(x=self._wavelengths, y=self._transmissions)
 
         # attach the appropriate astropy units
         self._wavelengths <<= u.micron
@@ -295,10 +298,27 @@ class BroadBand:
     # is converted back to the flavor and units of the incoming fluxes, or to the optionally specified flavor
     # and/or units.
     #
+    # The function supports two ways of interpreting the incoming fluxes:
+    #  - Without wavelength bin borders (the default), the fluxes are samples of a continuous distribution at the
+    #    given wavelengths. The function log-log interpolates both the fluxes and the transmission curve on a grid
+    #    that combines these wavelengths with the grid points on which the transmission curve is defined, and
+    #    integrates the product with the trapezoidal rule.
+    #  - With wavelength bin borders (the \em leftBorders and \em rightBorders arguments), each flux is the mean flux
+    #    over the corresponding wavelength bin, as recorded by a SKIRT instrument with a disjoint wavelength grid.
+    #    The flux is then constant across each bin, so that the integral in the equation above becomes the sum of
+    #    the bin fluxes, each weighted by the integral of the transmission curve over the bin. The transmission curve
+    #    is linearly interpolated between the grid points on which it is defined. Because this conserves the flux in
+    #    each bin, it remains accurate for spectral features narrower than a bin, such as emission lines, and for
+    #    bins without flux, such as in noisy Monte Carlo output, where the interpolation underestimates the result.
+    #    For a smooth spectrum, both methods are about equally accurate. This method also needs less memory and
+    #    computation time for large data cubes. The bins must not overlap, but there may be gaps between them.
+    #    The parts of the band outside the bins contribute no flux, as for the default.
+    #
     # The function accepts the following arguments:
-    # - \em wavelengths: an astropy quantity array specifying the wavelengths \f$\lambda_\ell\f$, in increasing order,
-    #   on which the fluxes are sampled. The convolution is performed on a wavelength grid that combines the grid
-    #   points given here with the grid points on which the band transmission curve is defined.
+    # - \em wavelengths: an astropy quantity array specifying the wavelengths \f$\lambda_\ell\f$ on which the fluxes
+    #   are sampled, or with wavelength bin borders, the characteristic wavelengths of the bins. The wavelengths can be
+    #   given in wavelength, frequency, or energy units, as in SKIRT output for the corresponding output style, and in
+    #   increasing or decreasing order. With bin borders, they are used only to convert the flavor of the fluxes.
     # - \em fluxes: an astropy quantity array specifying the flux distribution(s) \f$F_\lambda(\lambda_\ell)\f$.
     #   This can be an array with the same length as \em wavelengths, or a multi-dimensional
     #   array where the last dimension has the same length as \em wavelengths.
@@ -307,16 +327,38 @@ class BroadBand:
     #   convolution calculation, or None (or omitted) to indicate no limit. The incoming flux distribution is resampled
     #   to all wavelength points in the combined convolution grid. Convolving large data cubes may thus consume
     #   a prohibitive amount of memory and/or computation time unless the number of wavelengths is limited.
+    #   This argument is ignored with wavelength bin borders.
     # - \em flavor: the flavor and/or units to which the result must be converted. If missing or None, the result
     #   is converted back to the flavor and units of the incoming fluxes. If specified, this can be one of the
     #   strings "neutral", "wavelength", or "frequency", or an explicit astropy unit instance that is compatible
     #   with the incoming flux type (density, brightness, luminosity), after flavor conversion.
+    # - \em leftBorders, \em rightBorders: astropy quantity arrays with the same length as \em wavelengths, specifying
+    #   the borders of the wavelength bin of each flux, or None (or omitted) to interpret the fluxes as samples.
+    #   The borders can be given in wavelength, frequency, or energy units, as listed by the SKIRT
+    #   InstrumentWavelengthGridProbe for the corresponding output style (see the wavelengthBinBorders() function of
+    #   the Instrument class in the pts.simulation package). Both arguments must be specified, or neither.
     #
-    def convolve(self, wavelengths, fluxes, *, numWavelengths=None, flavor=None):
+    def convolve(self, wavelengths, fluxes, *, numWavelengths=None, flavor=None, leftBorders=None, rightBorders=None):
 
-        # convert fluxes to per-wavelength flavor
+        # convert frequencies or energies to wavelengths, and fluxes to per-wavelength flavor
+        wavelengths = wavelengths.to(u.micron, equivalencies=u.spectral())
         if flavor is None: flavor = fluxes.unit
         fluxes = sm.convertToFlavor(wavelengths, fluxes, "wavelength")
+
+        # with wavelength bin borders, sum the bin fluxes weighted by the integrated transmission of each bin
+        if leftBorders is not None or rightBorders is not None:
+            if leftBorders is None or rightBorders is None:
+                raise ValueError("Specify both the left and the right wavelength bin borders, or neither")
+            weights = self._binWeights(leftBorders, rightBorders)
+            if fluxes.shape[-1] != len(weights):
+                raise ValueError("The number of wavelength bins does not match the last dimension of the fluxes")
+            convolved = (fluxes.value @ weights) << fluxes.unit
+            return sm.convertToFlavor(self.pivotWavelength(), convolved, flavor)
+
+        # the interpolation requires increasing wavelengths, which frequencies or energies in increasing order are not
+        if len(wavelengths) > 1 and wavelengths[0] > wavelengths[-1]:
+            wavelengths = wavelengths[::-1]
+            fluxes = fluxes[..., ::-1]
 
         # get the involved wavelength grids, in micron, without units
         wa = wavelengths.to_value(u.micron)
@@ -342,8 +384,48 @@ class BroadBand:
         F = np.exp(interp1d(np.log(wa), _log(fluxes.value), copy=False, bounds_error=False, fill_value=0.)(np.log(w)))
 
         # perform integration, re-assign stripped per-wavelength units and convert back to original units
-        convolved = np.trapz(x=w, y=F*T) << fluxes.unit
+        convolved = _trapezoid(x=w, y=F*T) << fluxes.unit
         return sm.convertToFlavor(self.pivotWavelength(), convolved, flavor)
+
+    ## This private function returns a numpy array with the integral of the normalized transmission curve over each of
+    # the wavelength bins with the specified borders, given as astropy quantity arrays in wavelength, frequency, or
+    # energy units. The transmission is linearly interpolated between the grid points on which it is defined, and it
+    # is zero outside of the band, so that the integrals over a set of bins covering the band add up to one. The
+    # function raises an error if the borders have different lengths, if a bin has a negative width, or if bins
+    # overlap.
+    def _binWeights(self, leftBorders, rightBorders):
+        # convert the borders to wavelengths in micron, without units; for frequency or energy units, this reverses
+        # the order of the borders within each bin, which is restored by taking the minimum and maximum
+        left = np.atleast_1d(leftBorders.to_value(u.micron, equivalencies=u.spectral()))
+        right = np.atleast_1d(rightBorders.to_value(u.micron, equivalencies=u.spectral()))
+        if left.shape != right.shape or left.ndim != 1:
+            raise ValueError("The left and right wavelength bin borders must be arrays of the same length")
+        left, right = np.minimum(left, right), np.maximum(left, right)
+
+        # verify that the bins do not overlap, allowing for the rounding of borders written to a text file
+        order = np.argsort(left)
+        if np.any(left[order][1:] < right[order][:-1] * (1 - 1e-7)):
+            raise ValueError("The wavelength bins overlap, so that the fluxes are not means over disjoint bins")
+
+        # get the transmission curve, in micron and 1/micron, without units
+        wb = self._wavelengths.to_value(u.micron)
+        Tb = self._transmissions.to_value(1/u.micron)
+
+        # calculate the cumulative integral of the transmission at each of its grid points
+        Cb = np.concatenate(([0.], np.cumsum(0.5 * (Tb[1:] + Tb[:-1]) * np.diff(wb))))
+
+        # calculate the slope of the transmission in each grid interval, ignoring intervals of zero width
+        dw = np.diff(wb)
+        slopes = np.divide(np.diff(Tb), dw, out=np.zeros_like(dw), where=dw > 0)
+
+        # return the cumulative integral at the given wavelengths, integrating the linear interpolation exactly
+        def cumulative(x):
+            x = np.clip(x, wb[0], wb[-1])
+            k = np.clip(np.searchsorted(wb, x, side="right") - 1, 0, len(wb) - 2)
+            dx = x - wb[k]
+            return Cb[k] + dx * (Tb[k] + 0.5 * slopes[k] * dx)
+
+        return cumulative(right) - cumulative(left)
 
 # -----------------------------------------------------------------
 

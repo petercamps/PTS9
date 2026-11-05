@@ -482,6 +482,23 @@ class _SimulationEntity:
         # failed
         raise ValueError("Cannot obtain wavelengths for '{}_{}'".format(self._simulation.prefix(), self.name()))
 
+    ## This function returns a tuple of two astropy quantity arrays containing the left and right borders of the bins
+    # of the wavelength grid associated with this entity, or raises an error if this information cannot be obtained.
+    # The function loads the borders from the "*_wavelengths.dat" file associated with this entity, which for an
+    # instrument is written by the InstrumentWavelengthGridProbe. The borders are listed in the order and in the
+    # units of that file, so that for an output style other than wavelength, they are frequencies or energies.
+    #
+    # The borders describe the extent of each bin. Only for a disjoint wavelength grid, which has a constant
+    # transmission across each bin, is the effective bin width (see the wavelengthBinWidths() function) equal to the
+    # distance between the borders; for a wavelength grid consisting of bands, it is smaller.
+    def wavelengthBinBorders(self):
+        wavefilepaths = self.outFilePaths("wavelengths.dat")
+        if len(wavefilepaths) == 1:
+            left, right = loadColumns(wavefilepaths[0], "left border,right border")
+            return np.atleast_1d(left), np.atleast_1d(right)
+        raise ValueError("Cannot obtain wavelength bin borders for '{}_{}'".format(self._simulation.prefix(),
+                                                                                  self.name()))
+
     ## This function uses the wavelengths() function to load the characteristic wavelengths of the
     # wavelength grid associated with this entity, and then determines the zero-based grid index corresponding
     # to (i.e. with a characteristic wavelength nearest to) each of the wavelengths specified as an argument.

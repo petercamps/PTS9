@@ -96,6 +96,14 @@ def makeRGBImages(simulation, wavelengthTuples=None, *, fileType="total", fromPe
 # After convolving the SKIRT output data cubes with each of the specified broadbands, the function converts the
 # surface brightness values for each band to per-frequency flavor (MJy/sr) before performing the RGB color mixing.
 #
+# Each value in a SKIRT data cube is the mean surface brightness over a wavelength bin. To convolve the cubes in a way
+# that conserves the surface brightness in each bin, which matters for emission lines and noisy output (see the
+# BroadBand.convolve() function), the function needs the borders of the wavelength bins of each instrument. It loads
+# these borders from the output of an InstrumentWavelengthGridProbe in the simulation, and passes them to that function.
+# If the simulation has no such probe output for an instrument, or if the wavelength grid of the instrument does not
+# consist of disjoint bins (for example, because it consists of bands), the function logs a warning and interpolates
+# the surface brightness between the characteristic wavelengths of the bins instead.
+#
 # The final images are saved in PNG format and have the same name as the corresponding ".fits" file, possibly
 # extended with a custom name segment. By default the images are placed next to the corresponding ".fits" files in
 # the same directory, but another output directory can be specified if needed.
@@ -138,11 +146,18 @@ def makeConvolvedRGBImages(simulation, contributions, name="", *, fileType="tota
         # and keep track of the largest surface brightness value (in MJy/sr) in each of the images
         images = []
         fmaxes = []
+        bordersPerInstrument = {}
         for instrument, filepath in instr_paths:
             logging.info("Convolving for RGB image {}{}".format(filepath.stem, name))
 
             # get the data cube in its intrinsic units
             cube = sm.loadFits(filepath)
+
+            # get the wavelengths and, once for each instrument, the wavelength bin borders (or None)
+            wavelengths = instrument.wavelengths()
+            if instrument.name() not in bordersPerInstrument:
+                bordersPerInstrument[instrument.name()] = _loadBinBorders(instrument)
+            left, right = bordersPerInstrument[instrument.name()]
 
             # initialize an RGB frame
             dataRGB = np.zeros( (cube.shape[0], cube.shape[1], 3) ) << sbunit
@@ -150,7 +165,7 @@ def makeConvolvedRGBImages(simulation, contributions, name="", *, fileType="tota
             # add color for each filter
             for band,w0,w1,w2 in contributions:
                 # convolve and convert to per frequency units
-                data = band.convolve(instrument.wavelengths(), cube, flavor=sbunit)
+                data = band.convolve(wavelengths, cube, flavor=sbunit, leftBorders=left, rightBorders=right)
                 dataRGB[:,:,0] += w0*data
                 dataRGB[:,:,1] += w1*data
                 dataRGB[:,:,2] += w2*data
@@ -176,5 +191,26 @@ def makeConvolvedRGBImages(simulation, contributions, name="", *, fileType="tota
 
         # return the surface brightness range used for these images
         return fmin,fmax
+
+## This private helper function returns a tuple with the left and right borders of the wavelength bins of the
+# specified instrument, loaded from the output of an InstrumentWavelengthGridProbe, if the simulation has such output
+# and if the bins are disjoint, i.e. if the effective width of each bin equals the distance between its borders.
+# Otherwise, the function logs a warning and returns a tuple with two None values, so that the band convolution
+# interpolates between the characteristic wavelengths of the bins instead.
+def _loadBinBorders(instrument):
+    try:
+        left, right = instrument.wavelengthBinBorders()
+        widths = instrument.wavelengthBinWidths()
+    except ValueError:
+        logging.warning("No wavelength bin borders for instrument {}; add an InstrumentWavelengthGridProbe to the "
+                        "simulation to convolve over the wavelength bins; interpolating between the characteristic "
+                        "wavelengths instead".format(instrument.name()))
+        return None, None
+    # allow for the rounding of the values written to the probe output file
+    if not np.allclose(widths.to_value(left.unit), np.abs(right - left).to_value(left.unit), rtol=1e-3, atol=0):
+        logging.warning("The wavelength grid of instrument {} does not consist of disjoint bins; interpolating between "
+                        "the characteristic wavelengths instead".format(instrument.name()))
+        return None, None
+    return left, right
 
 # -----------------------------------------------------------------

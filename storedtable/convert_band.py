@@ -21,9 +21,12 @@ from .io import writeStoredTable
 
 # -----------------------------------------------------------------
 
+# NumPy 2.0 renamed numpy.trapz() to numpy.trapezoid(), and later versions no longer offer the old name
+_trapezoid = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+
 # common private helper function to normalize a transmission curve to unity and output it as a stored table
 def _writeNormalized(outFilePath, wavelengths, transmissions):
-    transmissions /= np.trapz(x=wavelengths, y=transmissions)
+    transmissions /= _trapezoid(x=wavelengths, y=transmissions)
     writeStoredTable(outFilePath, ['lambda'], ['m'], ['lin'], [wavelengths],
                                   ['T'], ['1/m'], ['lin'], [transmissions])
 

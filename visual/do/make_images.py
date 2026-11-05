@@ -22,6 +22,11 @@
 #  - \em colors (string): a string specifying the three wavelength values or broadbands corresponding to each R,G,B
 #    color channel of the image; by default the script uses frames with wavelengths as widely apart as possible.
 #
+# For broadbands, the script convolves the data cubes with the bands. To conserve the surface brightness in each
+# wavelength bin, it uses the borders of the bins listed by an InstrumentWavelengthGridProbe in the simulation.
+# Without such probe output for an instrument, it logs a warning and interpolates between the characteristic
+# wavelengths of the bins instead.
+#
 # In all cases, the image files are is placed next to the "*.fits" file(s) being represented, with the same filename
 # but extended with the specified \em name string and the filename extension replaced by ".png".
 #

@@ -361,6 +361,10 @@ class _SimulationEntity:
         self._simulation = simulation
         self._xpath = xpath
 
+    ## This function returns the Simulation instance with which this entity is associated.
+    def simulation(self):
+        return self._simulation
+
     ## This function returns the prefix for the simulation with which this entity is associated. The prefix
     # is used as the initial segment of all output file names.
     def prefix(self):
@@ -524,6 +528,23 @@ class Instrument(_SimulationEntity):
     def name(self):
         return self.getStringAttribute("instrumentName")
 
+    ## This function returns a list of paths to the output files associated with this instrument, as described for
+    # the function of the same name in the base class, but limited to the kinds of files written by an instrument of
+    # this type (and by the InstrumentWavelengthGridProbe and InstrumentTimeGridProbe for this instrument). For
+    # example, the list for an SEDInstrument includes the "*_sed.dat" and "*_sedstats.dat" files, and the list for
+    # an EscapeInstrument the "*_bins.dat" file, the "*_bin<N>_sed.dat" and "*_bin<N>_sedstats.dat" files, and the
+    # data cubes. This matters if several instruments have the same name, as is allowed by SKIRT and as happens for
+    # the instrument pairs that replace a FullInstrument in upgraded ski files: each instrument then lists only its
+    # own files. Similarly, an instrument named "a" does not list the files of an instrument named "a_b". For an
+    # instrument type unknown to this function, the list includes all files with the instrument's name.
+    def outFilePaths(self, fileType=None):
+        paths = super().outFilePaths(fileType)
+        pattern = _instrumentFilePatterns.get(self.type())
+        if pattern is None:
+            return paths
+        start = len("{}_{}_".format(self.prefix(), self.name()))
+        return [ path for path in paths if pattern.fullmatch(path.name[start:]) ]
+
     ## For distant instruments (which use parallel projection), this function returns the distance of the instrument
     # to the model as an astropy scalar quantity with the length units specified in the ski file. If the instrument
     # does not have a distance attribute, or the distance attribute value does not include a unit string, the
@@ -594,5 +615,28 @@ def _outFilePaths(simulation, pattern):
 
 # the filename extension of an HDF5 file
 _hdf5Extension = ".hdf5"
+
+# regular expressions for the final segment of the names of the output files written by each type of instrument
+# (the portion after the simulation prefix and the instrument name), as used by Instrument.outFilePaths()
+_cubeNames = r"(total|transparent|primarydirect|primaryscattered\d*|secondarytransparent|secondarydirect|" \
+             r"secondaryscattered|stokes[QUV]|stats\d+)"
+_sedFiles = r"sed\.dat|sedstats\.dat"
+_cubeFiles = _cubeNames + r"\.fits"
+_escapeFiles = r"bins\.dat|bin\d+_sed\.dat|bin\d+_sedstats\.dat|" + _cubeFiles
+_lightCurveFiles = r"lc\.dat|lcstats\.dat"
+_spectralTimeMapFiles = r"stm_" + _cubeNames + r"\.fits"
+_probeFiles = r"wavelengths\.dat|timegrid\.dat"
+_instrumentFilePatterns = { instrumentType: re.compile("|".join(patterns + [_probeFiles]))
+                            for instrumentType, patterns in [
+    ("SEDInstrument", [_sedFiles]),
+    ("FrameInstrument", [_cubeFiles]),
+    ("FullInstrument", [_sedFiles, _cubeFiles]),
+    ("AllSkyInstrument", [_cubeFiles]),
+    ("HEALPixSkyInstrument", [_cubeFiles]),
+    ("PerspectiveInstrument", [_cubeFiles]),
+    ("LightCurveInstrument", [_lightCurveFiles]),
+    ("SpectralTimeMapInstrument", [_spectralTimeMapFiles]),
+    ("EscapeInstrument", [_escapeFiles]),
+] }
 
 # -----------------------------------------------------------------

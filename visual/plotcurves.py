@@ -13,7 +13,9 @@
 
 # -----------------------------------------------------------------
 
+import collections
 import logging
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pts.simulation as sm
@@ -25,6 +27,13 @@ import pts.utils as ut
 ## This function creates a plot of the SEDs produced by one or more SKIRT simulations. Specifically, the function
 # accepts a sequence of Simulation and/or Instrument instances (or a single instance of either of these types),
 # and it plots the total flux density for each of the instruments that actually produced an "*_sed.dat" file.
+#
+# For an escape instrument with the SEDFiles output style, which writes an "*_bin<N>_sed.dat" file for each escape
+# bin, the function plots the SED of each bin, labelled with the bin index and the directions covered by the bin.
+# The \em bins argument can limit the plot to the escape bins with the zero-based indices in the specified sequence;
+# it does not affect the other instruments. If the plot includes more than six bins of an escape instrument, the
+# function colors their curves along a color map, with a color bar for the bin index, instead of listing each bin in
+# the legend.
 #
 # If there is only a single SED, and the corresponding output file includes the individual flux components,
 # the function plots these as well.
@@ -40,7 +49,7 @@ import pts.utils as ut
 # pts.utils.savePath() function. In interactive mode (see the pts.utils.interactive() function),
 # the figure is not saved and it is left open so that is displayed in notebooks.
 #
-def plotSeds(simulation, minWavelength=None, maxWavelength=None, decades=None, *,
+def plotSeds(simulation, minWavelength=None, maxWavelength=None, decades=None, *, bins=None,
              outDirPath=None, outFileName=None, outFilePath=None, figSize=(8, 6), interactive=None):
 
     # private function to get the maximum flux within the wavelength range passed to the plotSeds function
@@ -53,24 +62,37 @@ def plotSeds(simulation, minWavelength=None, maxWavelength=None, decades=None, *
         else:
             return flux.max()
 
-    # get the (instrument, output file path) tuples
-    instr_paths = sm.instrumentOutFilePaths(simulation, "sed.dat")
-    if len(instr_paths) < 1:
+    # get the (instrument, output file path) tuples, and turn them into (instrument, output file path, label,
+    # escape bin index) tuples, leaving out the escape bins that are not selected; the bin index is None for
+    # instruments other than escape instruments
+    entries = []
+    escapeLabels = {}
+    for instrument, filepath in sm.instrumentOutFilePaths(simulation, "sed.dat"):
+        label = "{} {}".format(instrument.prefix(), instrument.name())
+        index = sm.escapeBinIndex(filepath) if instrument.type() == "EscapeInstrument" else None
+        if index is not None:
+            if bins is not None and index not in bins:
+                continue
+            if id(instrument) not in escapeLabels:
+                escapeLabels[id(instrument)] = sm.loadEscapeBins(instrument).labels()
+            label += " bin {}: {}".format(index, escapeLabels[id(instrument)][index])
+        entries.append((instrument, filepath, label, index))
+    if len(entries) < 1:
         return
 
     # setup the figure
     plt.figure(figsize=figSize)
 
     # if there is a single output file, and it has components, plot the components
-    if len(instr_paths) == 1 and any(["transparent" in col for col in sm.getColumnDescriptions(instr_paths[0][1])]):
-        instrument, filepath = instr_paths[0]
+    if len(entries) == 1 and any(["transparent" in col for col in sm.getColumnDescriptions(entries[0][1])]):
+        instrument, filepath, label, index = entries[0]
         # load the columns (we assume that all components have the same units)
         wave, tot, tra, dirpri, scapri, dirsec, scasec = sm.loadColumns(filepath, (0, 1, 2, 3, 4, 5, 6))
         waveUnit = wave.unit
         fluxUnit = tot.unit
         fluxMax = max(maxFluxInRange(tot, wave), maxFluxInRange(tra, wave))
         # plot the various components
-        label = "{} {} ".format(instrument.prefix(), instrument.name())
+        label += " "
         plt.plot(wave.value, tot.value, color='k', ls='solid', label=label + "total")
         plt.plot(wave.value, tra.value, color='b', ls='dotted', label=label + "transparent")
         plt.plot(wave.value, (dirpri + scapri).value, color='b', ls='solid', label=label + "primary")
@@ -81,7 +103,14 @@ def plotSeds(simulation, minWavelength=None, maxWavelength=None, decades=None, *
         colors = ('r', 'g', 'b', 'c', 'm', 'y')
         colorindex = 0
         first = True
-        for instrument, filepath in instr_paths:
+        # for each escape instrument with more than six bins in the plot, the bin indices in the plot
+        binIndices = collections.defaultdict(list)
+        for instrument, filepath, label, index in entries:
+            if index is not None: binIndices[id(instrument)].append(index)
+        binIndices = { key: indices for key, indices in binIndices.items() if len(indices) > 6 }
+        colorMap = mpl.colormaps["viridis"]
+        norms = {}
+        for instrument, filepath, label, index in entries:
             # load the total flux; first time remember units; thereafter convert units
             wave, flux = sm.loadColumns(filepath, (0, 1))
             if first:
@@ -93,13 +122,21 @@ def plotSeds(simulation, minWavelength=None, maxWavelength=None, decades=None, *
                 wave <<= waveUnit
                 flux = sm.convertToFlavor(wave, flux, fluxUnit)
                 fluxMax = max(fluxMax, maxFluxInRange(flux, wave))
-            # plot
-            plt.plot(wave.value, flux.value, color=colors[colorindex],
-                     label="{} {} total".format(instrument.prefix(), instrument.name()))
-            # advance color index
-            colorindex = (colorindex + 1) % len(colors)
+            # plot a bin of an escape instrument with many bins in the color of its bin index along the color map,
+            # adding a color bar for the instrument when plotting its first bin
+            key = id(instrument)
+            if key in binIndices:
+                if key not in norms:
+                    norms[key] = mpl.colors.Normalize(vmin=min(binIndices[key]), vmax=max(binIndices[key]))
+                    plt.colorbar(mpl.cm.ScalarMappable(norm=norms[key], cmap=colorMap), ax=plt.gca(),
+                                 label="{} {} escape bin".format(instrument.prefix(), instrument.name()))
+                plt.plot(wave.value, flux.value, color=colorMap(norms[key](index)), lw=1)
+            # plot other SEDs in the next color of the list, with a label in the legend
+            else:
+                plt.plot(wave.value, flux.value, color=colors[colorindex], label=label + " total")
+                colorindex = (colorindex + 1) % len(colors)
 
-    # set axis details and add a legend
+    # set axis details and add a legend, if there are labelled curves
     plt.xscale('log')
     plt.yscale('log')
     plt.xlim(_adjustWavelengthRange(plt.xlim(), waveUnit, minWavelength, maxWavelength))
@@ -107,14 +144,15 @@ def plotSeds(simulation, minWavelength=None, maxWavelength=None, decades=None, *
         plt.ylim(fluxMax.value * 10 ** (-decades), fluxMax.value * 10 ** 0.2)
     plt.xlabel(sm.latexForWavelengthWithUnit(waveUnit), fontsize='large')
     plt.ylabel(sm.latexForSpectralFluxWithUnit(fluxUnit), fontsize='large')
-    plt.legend(loc='best')
+    if len(plt.gca().get_legend_handles_labels()[1]) > 0:
+        plt.legend(loc='best')
 
     # if not in interactive mode, save the figure; otherwise leave it open
     if not ut.interactive(interactive):
         # use the first instrument output path; if there are multiple instruments, remove the instrument name
-        defSaveFilePath = instr_paths[0][1]
-        if len(instr_paths) > 1:
-            defSaveFilePath = defSaveFilePath.with_name(instr_paths[0][0].prefix() + "_sed.pdf")
+        defSaveFilePath = entries[0][1]
+        if len(entries) > 1:
+            defSaveFilePath = defSaveFilePath.with_name(entries[0][0].prefix() + "_sed.pdf")
         saveFilePath = ut.savePath(defSaveFilePath, (".pdf",".png"),
                                    outDirPath=outDirPath, outFileName=outFileName, outFilePath=outFilePath)
         plt.savefig(saveFilePath, bbox_inches='tight', pad_inches=0.25)

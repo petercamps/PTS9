@@ -45,11 +45,14 @@ from .rgbimage import RGBImage
 # \note The function uses the same pixel range scaling for all RGB images created for a particular wavelength tuple,
 # across multiple instruments. To achieve this, the function makes a separate preprocessing pass over all files.
 #
+# The function skips escape instruments, whose data cubes hold escape bins rather than images, and logs a message
+# for each of them.
+#
 def makeRGBImages(simulation, wavelengthTuples=None, *, fileType="total", fromPercentile=30, toPercentile=100,
                   outDirPath=None):
 
     # get the (instrument, output file path) tuples to be handled
-    instr_paths = sm.instrumentOutFilePaths(simulation, fileType+".fits")
+    instr_paths = _withoutEscapeInstruments(sm.instrumentOutFilePaths(simulation, fileType+".fits"))
     if len(instr_paths) < 1:
         return
 
@@ -133,11 +136,14 @@ def makeRGBImages(simulation, wavelengthTuples=None, *, fileType="total", fromPe
 #  The function returns a tuple (fmin, fmax) specifying the surface brightness range actually used in the images,
 #  as an astropy quantity with per-frequency surface brightness units (MJy/sr).
 #
+#  The function skips escape instruments, whose data cubes hold the flux density of escape bins rather than surface
+#  brightness images, and logs a message for each of them.
+#
 def makeConvolvedRGBImages(simulation, contributions, name="", *, fileType="total", decades=3,
                            fmax=None, fmin=None, outDirPath=None):
 
     # get the (instrument, output file path) tuples to be handled
-    instr_paths = sm.instrumentOutFilePaths(simulation, fileType+".fits")
+    instr_paths = _withoutEscapeInstruments(sm.instrumentOutFilePaths(simulation, fileType+".fits"))
     if len(instr_paths) > 0:
         name = "" if not name else "_" + name
         sbunit = sm.unit("MJy/sr")
@@ -191,6 +197,15 @@ def makeConvolvedRGBImages(simulation, contributions, name="", *, fileType="tota
 
         # return the surface brightness range used for these images
         return fmin,fmax
+
+## This private helper function returns the specified list of (instrument, output file path) tuples without the
+# tuples for escape instruments, whose data cubes hold escape bins rather than images, and logs a message for each
+# escape instrument that it leaves out.
+def _withoutEscapeInstruments(instr_paths):
+    escapeNames = { instrument.name() for instrument, _ in instr_paths if instrument.type() == "EscapeInstrument" }
+    for name in sorted(escapeNames):
+        logging.info("Skipping escape instrument {}: its data cubes hold escape bins rather than images".format(name))
+    return [ (instrument, filepath) for instrument, filepath in instr_paths if instrument.type() != "EscapeInstrument" ]
 
 ## This private helper function returns a tuple with the left and right borders of the wavelength bins of the
 # specified instrument, loaded from the output of an InstrumentWavelengthGridProbe, if the simulation has such output

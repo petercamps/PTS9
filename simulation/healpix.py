@@ -7,7 +7,10 @@
 
 ## \package pts.simulation.healpix Handling of HEALPix grids
 #
-# This module offers functionality to work with HEALPix grids output by the HEALPixSkyInstrument.
+# This module offers functionality to work with HEALPix grids output by the HEALPixSkyInstrument, and by an
+# EscapeInstrument with a HEALPixEscapeBinning and the DataCubes output style, which uses the same layout of the
+# HEALPix pixels in its data cubes. For the latter, the angles theta and phi are the inclination and azimuth of the
+# escape direction, and the center of a projection map without rotation lies at inclination 90° and azimuth 180°.
 #
 
 # -----------------------------------------------------------------

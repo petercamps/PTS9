@@ -15,6 +15,8 @@
 # (\em ski files), and with SKIRT simulation output files.
 #
 
+from .escape import EscapeBins, loadEscapeBins, escapeBinIndex, loadEscapeFluxes, loadEscapeRelativeErrors, \
+                    loadEscapeLuminosities
 from .fits import loadFits, getFitsAxes, writeFits
 from .simulation import createSimulation, createSimulations, instrumentOutFilePaths, probeOutFilePaths, \
                         Simulation, Instrument, Probe

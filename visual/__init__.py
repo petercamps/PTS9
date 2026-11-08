@@ -21,6 +21,7 @@ from .moviefile import MovieFile
 from .plotbands import plotBuiltinBands
 from .plotconvergencecuts import plotConvergenceCuts
 from .plotcurves import plotSeds, plotSources, plotSpectralResolution
+from .plotescapebins import plotEscapeBins
 from .plotgrids import plotGrids
 from .plotpolarization import plotPolarization
 from .plotscalarcuts import plotScalarCuts

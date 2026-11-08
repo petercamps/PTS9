@@ -18,7 +18,9 @@
 #                                                 to the path, as for the -o option of SKIRT.
 #  - \em prefix (string): the prefix of the simulation to handle; by default handles all simulations in the directory.
 #  - \em instruments (string): up to three comma-separated instrument names; by default handles the first three
-#                              instruments in the simulated configuration.
+#                              instruments in the simulated configuration. Each name must refer to an instrument
+#                              (or to two instruments with the same name) providing an SED and a data cube.
+#                              Escape instruments are ignored.
 #  - \em percentile (float): the percentile value in range [0,100] used to determine the maximum surface brightness in
 #                   the images. The default value is 100, so that the largest surface brightness value in the frame(s)
 #                   determines the maximum value. A smaller percentile value such as 99 could be used to exclude the
@@ -51,12 +53,21 @@ def do( simDirPath : (str, "SKIRT simulation output directory"),
     import pts.utils as ut
     import pts.visual as vis
 
-    # private function to retrieve the instrument with a specified name from a simulation
-    def instrumentWithName(sim, instrname):
+    # private function to retrieve the instruments with a specified name from a simulation (an SED and a frame
+    # instrument may share a name), verifying that they provide an SED and a data cube for the movie
+    def instrumentsWithName(sim, instrname):
         instrlist = [ instr for instr in sim.instruments() if instr.name()==instrname ]
         if len(instrlist) == 0:
             raise ut.UserError("simulation '{}' does not have instrument '{}'".format(sim.prefix(), instrname))
-        return instrlist[0]
+        instrlist = [ instr for instr in instrlist if instr.type() != "EscapeInstrument" ]
+        if len(instrlist) == 0:
+            raise ut.UserError("instrument '{}' of simulation '{}' is an escape instrument, which cannot be shown "
+                               "in the movie".format(instrname, sim.prefix()))
+        for fileType in ("sed.dat", "total.fits"):
+            if not any(len(instr.outFilePaths(fileType)) > 0 for instr in instrlist):
+                raise ut.UserError("instrument '{}' of simulation '{}' has no '*_{}' file".format(
+                                   instrname, sim.prefix(), fileType))
+        return instrlist
 
     # loop over the simulations to be handled
     for sim in sm.createSimulations(simDirPath, prefix if len(prefix) > 0 else None):
@@ -64,7 +75,7 @@ def do( simDirPath : (str, "SKIRT simulation output directory"),
         # get a list of the requested instruments (or simply specify the complete simulation)
         simspec = sim
         if len(instruments) > 0:
-            simspec = [ instrumentWithName(sim, instrname) for instrname in instruments.split(',') ]
+            simspec = [ instr for instrname in instruments.split(',') for instr in instrumentsWithName(sim, instrname) ]
 
         # create the movie
         vis.makeWavelengthMovie(simspec, maxPercentile=percentile, decades=dex, renormalize=renormalize!=0, rate=rate)

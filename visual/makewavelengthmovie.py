@@ -32,9 +32,11 @@ from matplotlib.figure import Figure
 # The function takes the following arguments:
 #  - simulation:    a sequence of Simulation and/or Instrument instances (or a single instance of one of these types).
 #                   The sequence is expanded into a list of up to three instruments; any extra instruments are ignored.
-#                   All instruments in the final list must include an integrated SED ("*_sed.dat" file) as well as
-#                   total flux pixel frames ("*_total.fits" file). All instruments must use the same wavelength grid,
-#                   and the instruments frames must have the same pixel size. These requirements are not verified.
+#                   Escape instruments are ignored. All instruments in the final list must include an integrated SED
+#                   ("*_sed.dat" file) as well as total flux pixel frames ("*_total.fits" file), which may be written
+#                   by two instruments with the same name, such as an SEDInstrument and a FrameInstrument; otherwise
+#                   the function does nothing. All instruments must use the same wavelength grid, and the instruments
+#                   frames must have the same pixel size. These requirements are not verified.
 #                   The fluxes and surface brightness values are plotted in the units of the SKIRT output.
 #  - maxPercentile: the percentile value in range [0,100] used to determine the maximum surface brightness in the
 #                   images. The default value is 100, so that the largest surface brightness value in the frame(s)
@@ -62,16 +64,16 @@ from matplotlib.figure import Figure
 def makeWavelengthMovie(simulation, *, maxPercentile=100, minPercentile=10, decades=None, renormalize=False,
                         outDirPath=None, outFileName=None, outFilePath=None, rate=7):
 
-    # get the list of instruments and corresponding output file paths
-    instrA, sedPaths = zip(*sm.instrumentOutFilePaths(simulation, "sed.dat"))
-    instrB, cubPaths = zip(*sm.instrumentOutFilePaths(simulation, "total.fits"))
-    instrA = instrA[:3]
-    instrB = instrB[:3]
-    sedPaths = sedPaths[:3]
-    cubPaths = cubPaths[:3]
-    if len(instrA) < 1 or len(instrA) != len(instrB)  \
-                       or any([ a.name() != b.name() for a,b in zip(instrA,instrB) ]):
+    # get the list of instruments and corresponding output file paths, ignoring escape instruments
+    sedEntries = [ (instrument, path) for instrument, path in sm.instrumentOutFilePaths(simulation, "sed.dat")
+                   if instrument.type() != "EscapeInstrument" ][:3]
+    cubEntries = [ (instrument, path) for instrument, path in sm.instrumentOutFilePaths(simulation, "total.fits")
+                   if instrument.type() != "EscapeInstrument" ][:3]
+    if len(sedEntries) < 1 or len(sedEntries) != len(cubEntries) \
+                           or any([ a.name() != b.name() for (a,_),(b,_) in zip(sedEntries,cubEntries) ]):
         return
+    instrA, sedPaths = zip(*sedEntries)
+    instrB, cubPaths = zip(*cubEntries)
     instruments = instrA
 
     # get the wavelength grid for the first instrument (assumed to be the same for all instruments)

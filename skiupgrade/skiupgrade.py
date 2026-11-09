@@ -290,6 +290,9 @@ def _getUpgradeDefinitions():
         # place, so that SKIRT rejects the ski file until it has been replaced by hand (see _reportManualChanges)
         *[ _changeZeroScalarPropertyName(typeName, "maxNotConvergedCells", "maxFractionNotConvergedCells")
                                                      for typeName in _dynamicStateRecipeTypes ],
+
+        # SKIRT 10 update (nov 2026): fix the spelling of the abundances property of the X-ray atomic gas mix
+        _changeScalarPropertyName("XRayAtomicGasMix", "abundancies", "abundances"),
     ]
 
 # the concrete dynamic medium state recipe types
